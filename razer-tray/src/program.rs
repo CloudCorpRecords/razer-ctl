@@ -110,6 +110,10 @@ pub struct ProgramState {
     /// a guess (AC), which a config with every profile set acts on as it always has, and a
     /// profile still waiting for its first reading never does (see [`Self::mode`]).
     pub power_known: bool,
+    /// No adoption before this instant. Set at a power-source change: the EC switches some
+    /// settings per source by itself (on `0x029F` the keyboard brightness, 82% on AC and 88%
+    /// on battery, measured 2026-10-14), and a read at the switch saves the old value.
+    pub adopt_not_before: Option<std::time::Instant>,
     /// Profiles never set: a new config's. Each is read from the laptop the first time the
     /// tray sees that power source, and never applied before.
     pub unset: Unset,
@@ -198,6 +202,7 @@ impl ProgramState {
             fan_filter: FanRpmFilter::default(),
             ac_power,
             power_known: power.is_some(),
+            adopt_not_before: None,
             unset: config.unset(),
             enforce: config.enforce,
             reassert_on_resume: config.reassert_on_resume,
@@ -308,6 +313,13 @@ impl ProgramState {
                     self.device_state = intent;
                     self.rebuild_menu(tray_icon);
                 }
+            }
+            Reading::Adopt { .. }
+                if self
+                    .adopt_not_before
+                    .is_some_and(|t| std::time::Instant::now() < t) =>
+            {
+                log::debug!("power source just changed; adopting after it settles");
             }
             Reading::Adopt { ac_power, profile } => {
                 let placeholder = if ac_power {

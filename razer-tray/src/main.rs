@@ -98,6 +98,12 @@ fn detect_with_retry() -> Result<device::Device> {
 /// 1 s loop tick.
 const KEYBOARD_FADE_MS: u32 = 3000;
 
+/// How long after a power-source change to wait before adopting a reading as the new
+/// source's profile. On `0x029F` (2026-10-14) the EC's own per-source keyboard brightness
+/// switched 0.4 s after one unplug, took more than 5 s on another, and took at least 25 s
+/// after a replug, so no fixed wait catches it every time. This covers the fast case.
+const POWER_SETTLE: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Backoff for resync attempts after a failed exchange: 2 s doubling to 60 s. The old
 /// recovery slept 1 s at a time INSIDE the event-loop callback until it succeeded, so a
 /// lasting failure froze the menu, hover and Quit.
@@ -482,6 +488,7 @@ fn main() -> Result<()> {
                     }
                 }
                 state.ac_power = ac_now;
+                state.adopt_not_before = Some(now + POWER_SETTLE);
                 // The header names the profile picks go to.
                 state.rebuild_menu(Some(&tray_icon));
                 last_app_scan_timestamp = now - std::time::Duration::from_secs(10);
@@ -500,7 +507,13 @@ fn main() -> Result<()> {
                 && !state.needs_sync
             {
                 state.needs_sync = true;
-                next_sync_at = now;
+                // After a change, read once the EC has finished switching its own per-source
+                // settings; see `adopt_not_before`.
+                next_sync_at = if source_changed {
+                    now + POWER_SETTLE
+                } else {
+                    now
+                };
             }
 
             // Hand edits to the config take effect without a restart (Action rules can

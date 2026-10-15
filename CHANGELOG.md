@@ -38,7 +38,9 @@ Windows 11, and nowhere else.
   the menu say what happened. A file that can't be read is now read-only for the device too: wake
   re-asserts and zone repairs used to write defaults while it waited.
 - Configs written before this load and save byte for byte as before (a test holds a 0.9.5 file).
-  Whether a reading at the moment of an unplug catches the EC mid-change is not measured.
+  After a power-source change the tray waits 5 s before adopting. The `0x029F` EC keeps its own
+  keyboard brightness per source (82% plugged in, 88% on battery here) and its switch took 0.4 s
+  to over 25 s, so an adopted profile can still hold the other source's brightness.
 
 ## 0.9.5: keyboard colors, a clearer menu, and a tray that can't die at login or lose its config
 Built and tested on `0x029F` (2026-09-23). Probes that set the scope, same machine: `0x070f` is Max

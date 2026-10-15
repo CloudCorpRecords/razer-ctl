@@ -12,6 +12,7 @@ use crate::types::{
     BatteryCare, CpuBoost, FanMode, GpuBoost, KeyboardEffect, LightsAlwaysOn, LogoMode,
     MaxFanSpeedMode,
 };
+use crate::unsupported::{Optional, Unsupported};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum FanSpeed {
@@ -360,9 +361,15 @@ impl DeviceState {
                 FanSpeed::Manual(rpm)
             }
         };
+        // Placeholders for a setting this laptop lacks are never written (see
+        // `write_optional`) and never count as drift (see `enforced_fields_differ_on`).
         let lights_mode = LightsMode {
-            logo_mode: command::get_logo_mode(device)?,
-            keyboard_brightness: command::get_keyboard_brightness(device)?,
+            logo_mode: read_optional(device, Optional::Logo, LogoMode::Off, || {
+                command::get_logo_mode(device)
+            })?,
+            keyboard_brightness: read_optional(device, Optional::KeyboardBrightness, 0, || {
+                command::get_keyboard_brightness(device)
+            })?,
             always_on: command::get_lights_always_on(device)?,
             // The effect IS readable on this device (0x0f82) -- see get_keyboard_effect.
             // A read failure is not fatal: the effect is cosmetic and older/other models
@@ -374,7 +381,10 @@ impl DeviceState {
             keyboard_color: None,
         };
 
-        let battery_care = command::get_battery_care(device)?;
+        let battery_care =
+            read_optional(device, Optional::BatteryCare, BatteryCare::DISABLE, || {
+                command::get_battery_care(device)
+            })?;
 
         // Max fan is a Custom-only toggle; only read it there -- the getter is meaningless
         // outside Custom, and skipping it spares a HID read on every (frequent) poll.
@@ -464,7 +474,9 @@ impl DeviceState {
             log::warn!("fan command failed: {:?}", e);
         }
 
-        let logo_result = command::set_logo_mode(device, self.lights_mode.logo_mode);
+        let logo_result = write_optional(device, Optional::Logo, || {
+            command::set_logo_mode(device, self.lights_mode.logo_mode)
+        });
         if let Err(e) = &logo_result {
             log::warn!("logo command failed: {:?}", e);
         }
@@ -474,6 +486,23 @@ impl DeviceState {
             .and(max_fan_result)
             .and(fan_result)
             .and(logo_result)
+    }
+
+    /// A reading with the settings in `lacking` taken from `intent`. A reading holds a
+    /// placeholder for a setting the laptop lacks (see `read_optional`), and the tray must
+    /// not adopt one into a profile or show it as the device's value: a profile saved with
+    /// it would apply it on hardware that has the setting.
+    pub fn with_lacking_from(mut self, intent: &DeviceState, lacking: Unsupported) -> Self {
+        if lacking.contains(Optional::Logo) {
+            self.lights_mode.logo_mode = intent.lights_mode.logo_mode;
+        }
+        if lacking.contains(Optional::KeyboardBrightness) {
+            self.lights_mode.keyboard_brightness = intent.lights_mode.keyboard_brightness;
+        }
+        if lacking.contains(Optional::BatteryCare) {
+            self.battery_care = intent.battery_care;
+        }
+        self
     }
 
     /// Carry ONLY the fields the user actually changed from `base`, leaving the rest of
@@ -544,11 +573,15 @@ impl DeviceState {
         continue_after_rejection(&mut first, self.apply_keyboard_lighting(device))?;
         continue_after_rejection(
             &mut first,
-            command::set_keyboard_brightness(device, self.lights_mode.keyboard_brightness),
+            write_optional(device, Optional::KeyboardBrightness, || {
+                command::set_keyboard_brightness(device, self.lights_mode.keyboard_brightness)
+            }),
         )?;
         continue_after_rejection(
             &mut first,
-            command::set_battery_care(device, self.battery_care),
+            write_optional(device, Optional::BatteryCare, || {
+                command::set_battery_care(device, self.battery_care)
+            }),
         )?;
         first
     }
@@ -592,7 +625,9 @@ impl DeviceState {
         continue_after_rejection(&mut first, self.apply_perf_fan_logo(device))?;
         continue_after_rejection(
             &mut first,
-            command::set_battery_care(device, self.battery_care),
+            write_optional(device, Optional::BatteryCare, || {
+                command::set_battery_care(device, self.battery_care)
+            }),
         )?;
         first
     }
@@ -604,11 +639,27 @@ impl DeviceState {
     /// those must NOT trigger a re-assert. The tray's Enforce loop calls this before
     /// re-asserting against Synapse.
     pub fn enforced_fields_differ(&self, intended: &DeviceState) -> bool {
+        self.enforced_fields_differ_except(intended, Unsupported::default())
+    }
+
+    /// [`Self::enforced_fields_differ`], leaving out the settings `device` has turned out
+    /// not to have: their read-back is a placeholder, so comparing it would be drift that
+    /// no write can repair.
+    pub fn enforced_fields_differ_on(
+        &self,
+        intended: &DeviceState,
+        device: &impl HidTransport,
+    ) -> bool {
+        self.enforced_fields_differ_except(intended, unsupported_on(device))
+    }
+
+    fn enforced_fields_differ_except(&self, intended: &DeviceState, skip: Unsupported) -> bool {
         self.perf_mode != intended.perf_mode
             || self.fan_speed != intended.fan_speed
             || self.max_fan != intended.max_fan
-            || self.lights_mode.logo_mode != intended.lights_mode.logo_mode
-            || self.battery_care != intended.battery_care
+            || (!skip.contains(Optional::Logo)
+                && self.lights_mode.logo_mode != intended.lights_mode.logo_mode)
+            || (!skip.contains(Optional::BatteryCare) && self.battery_care != intended.battery_care)
     }
 
     /// [`Self::enforced_fields_differ`], for a state just read from `device`, plus what
@@ -623,7 +674,7 @@ impl DeviceState {
         device: &impl HidTransport,
         guard: &mut Zone2DriftGuard,
     ) -> bool {
-        if self.enforced_fields_differ(intended) {
+        if self.enforced_fields_differ_on(intended, device) {
             return true;
         }
         match self.fan_speed {
@@ -928,6 +979,59 @@ impl ConfigState {
             ac: self.ac_state_unset && self.ac_state == placeholder.ac_state,
             battery: self.battery_state_unset && self.battery_state == placeholder.battery_state,
         }
+    }
+}
+
+/// The optional settings `device` has turned out not to have; empty for a model that
+/// doesn't learn them.
+pub fn unsupported_on(device: &impl HidTransport) -> Unsupported {
+    device
+        .unsupported()
+        .map(|log| log.get())
+        .unwrap_or_default()
+}
+
+/// Read an optional setting. On a model that learns what it lacks (see
+/// [`crate::unsupported`]), a "not supported" answer records the setting and returns
+/// `placeholder`, and a setting already recorded is not asked again. Any other model, or
+/// any other error, returns the read as it is.
+fn read_optional<T>(
+    device: &impl HidTransport,
+    feature: Optional,
+    placeholder: T,
+    read: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let Some(log) = device.unsupported() else {
+        return read();
+    };
+    if log.get().contains(feature) {
+        return Ok(placeholder);
+    }
+    match read() {
+        Err(e) if crate::error::is_not_supported(&e) => {
+            note_unsupported(log, feature);
+            Ok(placeholder)
+        }
+        other => other,
+    }
+}
+
+/// Write an optional setting, under the same rule as [`read_optional`]: skipped once the
+/// laptop is known to lack it, and a "not supported" answer records it instead of failing.
+fn write_optional(
+    device: &impl HidTransport,
+    feature: Optional,
+    write: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    read_optional(device, feature, (), write)
+}
+
+fn note_unsupported(log: &crate::unsupported::UnsupportedLog, feature: Optional) {
+    if log.mark(feature) {
+        log::warn!(
+            "This laptop does not support {} (status 0x05); it is left alone from now on",
+            feature.name()
+        );
     }
 }
 
@@ -2630,6 +2734,143 @@ colors = ["#ffffff"]
                 battery: false
             },
             "but the edited battery profile is applied, not replaced by a reading"
+        );
+    }
+
+    // ---- a laptop that lacks an optional setting (issue #2) ----
+
+    /// A Balanced/Auto laptop whose EC answers `lacking` commands with "not supported"
+    /// and echoes every write. Logo, brightness and battery reads return real values.
+    fn laptop_lacking(lacking: &'static [u16]) -> crate::transport::MockTransport {
+        use crate::packet::{Packet, ResponseError};
+        crate::transport::MockTransport::with_fallible_responder(move |req| {
+            if lacking.contains(&req.command()) {
+                return Err(anyhow::Error::new(ResponseError::NotSupported));
+            }
+            let mut p = Packet::new(req.command(), &[]);
+            match req.command() {
+                0x0d82 => p.set_args(&[
+                    0,
+                    req.get_args()[1],
+                    crate::types::PerfMode::Balanced as u8,
+                    crate::types::FanMode::Auto as u8,
+                ]),
+                0x0382 => p.set_args(&[1, 4, 2]),
+                0x0383 => p.set_args(&[1, 5, 200]),
+                0x0084 => p.set_args(&[0, 0]),
+                0x0f82 => p.set_args(&[1, 5, 0x00]),
+                0x0792 => p.set_args(&[BatteryCare::from_percent(80).unwrap().wire_byte()]),
+                _ => return Ok(Packet::new(req.command(), req.get_args())),
+            }
+            Ok(p)
+        })
+    }
+
+    fn sent_command(mock: &crate::transport::MockTransport, command: u16) -> bool {
+        mock.sent().iter().any(|(c, _)| *c == command)
+    }
+
+    #[test]
+    fn a_supported_model_still_fails_a_read_the_ec_rejects() {
+        let mock = laptop_lacking(&[0x0792]);
+        let err = DeviceState::read(&mock).unwrap_err();
+        assert!(crate::error::is_not_supported(&err));
+    }
+
+    #[test]
+    fn a_learning_model_reads_around_a_missing_setting_and_stops_asking() {
+        let mock = laptop_lacking(&[0x0792]).learning();
+        let state = DeviceState::read(&mock).expect("battery care is optional");
+        assert_eq!(state.battery_care, BatteryCare::DISABLE);
+        assert_eq!(
+            state.lights_mode.keyboard_brightness, 200,
+            "the rest is read"
+        );
+        assert!(unsupported_on(&mock).contains(Optional::BatteryCare));
+
+        let asked = mock.sent().iter().filter(|(c, _)| *c == 0x0792).count();
+        DeviceState::read(&mock).unwrap();
+        let asked_again = mock.sent().iter().filter(|(c, _)| *c == 0x0792).count();
+        assert_eq!(asked, asked_again, "a recorded setting is not asked again");
+    }
+
+    #[test]
+    fn a_learning_model_skips_writes_it_lacks_and_the_rest_still_land() {
+        let mock = laptop_lacking(&[0x0383, 0x0303]).learning();
+        let state = DeviceState::default();
+        state
+            .apply(&mock)
+            .expect("a missing brightness is not an error");
+        assert!(unsupported_on(&mock).contains(Optional::KeyboardBrightness));
+        assert!(
+            sent_command(&mock, 0x0712),
+            "battery care was still written"
+        );
+
+        let before = mock.sent_count();
+        state.apply(&mock).unwrap();
+        let brightness_writes = mock.sent()[before..]
+            .iter()
+            .filter(|(c, _)| *c == 0x0303)
+            .count();
+        assert_eq!(
+            brightness_writes, 0,
+            "a recorded setting is not written again"
+        );
+    }
+
+    #[test]
+    fn a_learning_model_still_reports_other_errors() {
+        use crate::packet::{Packet, ResponseError};
+        let mock = crate::transport::MockTransport::with_fallible_responder(|req| {
+            if req.command() == 0x0712 {
+                return Err(anyhow::Error::new(ResponseError::Failure));
+            }
+            Ok(Packet::new(req.command(), req.get_args()))
+        })
+        .learning();
+        let err = DeviceState::default().enforce_to(&mock).unwrap_err();
+        assert!(!crate::error::is_not_supported(&err));
+        assert!(unsupported_on(&mock).is_empty());
+    }
+
+    #[test]
+    fn a_missing_setting_is_not_drift() {
+        let mock = laptop_lacking(&[0x0792, 0x0380, 0x0382]).learning();
+        let observed = DeviceState::read(&mock).unwrap();
+        let mut intended = observed;
+        intended.battery_care = BatteryCare::from_percent(60).unwrap();
+        intended.lights_mode.logo_mode = LogoMode::Static;
+
+        assert!(
+            observed.enforced_fields_differ(&intended),
+            "plain compare sees it"
+        );
+        assert!(!observed.enforced_fields_differ_on(&intended, &mock));
+        assert!(!observed.drifted_from(&intended, &mock, &mut Zone2DriftGuard::default()));
+
+        intended.perf_mode = PerfMode::Silent;
+        assert!(
+            observed.enforced_fields_differ_on(&intended, &mock),
+            "perf still counts"
+        );
+    }
+
+    #[test]
+    fn a_placeholder_never_replaces_the_intent() {
+        let mock = laptop_lacking(&[0x0792, 0x0383]).learning();
+        let reading = DeviceState::read(&mock).unwrap();
+        let mut intent = reading;
+        intent.battery_care = BatteryCare::from_percent(70).unwrap();
+        intent.lights_mode.keyboard_brightness = 128;
+        intent.lights_mode.logo_mode = LogoMode::Breathing;
+
+        let seen = reading.with_lacking_from(&intent, unsupported_on(&mock));
+        assert_eq!(seen.battery_care, intent.battery_care);
+        assert_eq!(seen.lights_mode.keyboard_brightness, 128);
+        assert_eq!(
+            seen.lights_mode.logo_mode, reading.lights_mode.logo_mode,
+            "logo was read"
         );
     }
 }

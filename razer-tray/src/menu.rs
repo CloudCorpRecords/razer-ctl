@@ -8,6 +8,7 @@ use strum::IntoEnumIterator;
 
 use librazer::keyboard::{KeyboardColor, KeyboardPreset};
 use librazer::types::{BatteryCare, CpuBoost, GpuBoost, KeyboardEffect, LightsAlwaysOn, LogoMode};
+use librazer::unsupported::{Optional, Unsupported};
 use tray_icon::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
 use crate::state::{
@@ -37,6 +38,8 @@ pub struct MenuOptions<'a> {
     pub refresh_rates: &'a [u32],
     /// This model's keyboard geometry is mapped, so custom colors can be offered.
     pub custom_colors: bool,
+    /// Settings this laptop lacks: their submenus are shown disabled.
+    pub unsupported: Unsupported,
     /// Named colors for the Keyboard lighting submenu.
     pub keyboard_presets: &'a [KeyboardPreset],
     /// Drives the "Battery bar" toggle.
@@ -65,10 +68,20 @@ pub fn build(
         windows_power_mode,
         refresh_rates,
         custom_colors,
+        unsupported,
         keyboard_presets,
         battery_bar,
         ac_power,
     } = *opts;
+    // A setting this laptop lacks keeps its submenu, disabled, so the menu says why it
+    // does nothing instead of hiding it.
+    let label_for = |label: &str, feature: Optional| {
+        if unsupported.contains(feature) {
+            format!("{label} (not supported)")
+        } else {
+            label.to_string()
+        }
+    };
     let mut event_handlers = std::collections::HashMap::new();
     let menu = Menu::new();
 
@@ -346,8 +359,8 @@ pub fn build(
 
     // Appended after Keyboard lighting.
     let logo_menu = Submenu::with_items(
-        "Logo lighting",
-        true,
+        label_for("Logo lighting", Optional::Logo),
+        !unsupported.contains(Optional::Logo),
         &modes
             .iter()
             .map(|i| i as &dyn IsMenuItem)
@@ -409,8 +422,8 @@ pub fn build(
         .collect();
 
     let brightness_menu = Submenu::with_items(
-        "Brightness",
-        true,
+        label_for("Brightness", Optional::KeyboardBrightness),
+        !unsupported.contains(Optional::KeyboardBrightness),
         &brightness_modes
             .iter()
             .map(|i| i as &dyn IsMenuItem)
@@ -556,8 +569,8 @@ pub fn build(
         .collect();
 
     menu.append(&Submenu::with_items(
-        "Charge limit",
-        true,
+        label_for("Charge limit", Optional::BatteryCare),
+        !unsupported.contains(Optional::BatteryCare),
         &battery_care_items
             .iter()
             .map(|i| i as &dyn IsMenuItem)

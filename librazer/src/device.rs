@@ -2,6 +2,7 @@ use crate::descriptor::{Descriptor, SUPPORTED};
 use crate::error::{DetectError, TransportError};
 use crate::packet::{Packet, ResponseError};
 use crate::transport::HidTransport;
+use crate::unsupported::UnsupportedLog;
 
 use anyhow::{anyhow, Context, Result};
 use std::{thread, time};
@@ -9,6 +10,8 @@ use std::{thread, time};
 pub struct Device {
     device: hidapi::HidDevice,
     pub info: Descriptor,
+    /// Set for a model not in the supported list: see [`crate::unsupported`].
+    unsupported: Option<UnsupportedLog>,
 }
 
 // Read the model id and clip to conform with https://mysupport.razer.com/app/answers/detail/a_id/5481
@@ -37,6 +40,14 @@ fn read_device_model() -> Result<String> {
 
 impl Device {
     const RAZER_VID: u16 = 0x1532;
+
+    /// Record the optional settings this laptop turns out not to have, instead of failing
+    /// on them. For a model whose features nobody has checked: the generic profile and
+    /// `razer-cli manual`. See [`crate::unsupported`].
+    pub fn learning_unsupported(mut self) -> Self {
+        self.unsupported = Some(UnsupportedLog::default());
+        self
+    }
 
     pub fn info(&self) -> &Descriptor {
         &self.info
@@ -82,6 +93,7 @@ impl Device {
                 return Ok(Device {
                     device,
                     info: descriptor.clone(),
+                    unsupported: None,
                 });
             }
         }
@@ -248,8 +260,9 @@ impl Device {
         // is rejected here exactly as it would be for a known model.
         log::warn!(
             "Model {} is not in the supported list; continuing with a generic profile \
-             (fan range {:?}, all features offered). Controls this chassis lacks will \
-             report 'not supported'. Please open an issue with this SKU so it can be added.",
+             (fan range {:?}, all features offered). Logo, keyboard brightness or battery \
+             care that this chassis lacks is left alone once it reports 'not supported'; \
+             other missing controls report it as an error. Please open an issue with this SKU so it can be added.",
             model_number_prefix,
             crate::matching::FALLBACK_FAN_RPM_RANGE
         );
@@ -263,7 +276,7 @@ impl Device {
                     log::info!(
                         "Using PID {pid:#06x} of {pid_list:#06x?} for model {model_number_prefix}"
                     );
-                    return Ok(device);
+                    return Ok(device.learning_unsupported());
                 }
                 Err(e) => last_err = Some(e),
             }
@@ -291,5 +304,9 @@ impl HidTransport for Device {
 
     fn send_once(&self, packet: Packet) -> Result<Packet> {
         Device::send_once(self, packet)
+    }
+
+    fn unsupported(&self) -> Option<&UnsupportedLog> {
+        self.unsupported.as_ref()
     }
 }

@@ -12,7 +12,8 @@ HID, without Synapse. No installer, service or account. The tray binary is 1.8 M
 This fork is maintained by one person with one laptop. Every hardware claim here was checked on a
 Razer Blade 16 (2023), `RZ09-0483`, USB PID `0x029F`, Windows 11, and nowhere else, unless a user's
 report is cited. An unknown model
-starts on a generic profile, and a command its firmware lacks fails with one clear error. See
+starts on a generic profile. A logo, keyboard brightness or charge limit its firmware lacks is
+disabled in the tray, and any other command it lacks fails with one clear error. See
 [Device support](#device-support).
 
 `razer-tray.exe` is a tray icon with a menu and a live tooltip. `razer-cli.exe` does the same from a
@@ -58,8 +59,9 @@ has the release history and the measurements behind it.
 - **Close apps using the GPU**: ends dGPU processes, skipping a safelist of system processes.
 - **Start with Windows**: an `HKCU\…\Run` entry.
 - **Status for scripts**: `razer-cli auto json` prints the device state, including actual fan RPM, as
-  flat JSON (for a Home Assistant sensor or a status line). `razer-cli enumerate --json` prints the
-  model block a device-support report needs.
+  flat JSON (for a Home Assistant sensor or a status line). A value the laptop doesn't report is
+  `null` and its field is listed in `unsupported`. `razer-cli enumerate --json` prints the model
+  block a device-support report needs.
 
 CLI exit codes:
 
@@ -100,9 +102,12 @@ The config is `%APPDATA%\razer-tray\config\default-config.toml`. The log is
 
 **Other models** start on a generic profile with every feature offered. The fan range comes from a
 table of 43 more PIDs transcribed from community data. There is no init sequence, because a guessed
-one is worse than none. Commands the firmware lacks answer `NotSupported` and fail at once. Expect
-perf modes and fans to work and some lighting or battery features not to; the error says which. If
-you try one, please [open an issue](../../issues/new/choose).
+one is worse than none. Commands the firmware lacks answer `NotSupported`. On these models the tray
+leaves a logo, keyboard brightness or charge limit the firmware lacks alone and shows its menu as
+"(not supported)"; any other missing command fails at once and the error says which.
+`razer-cli auto info` lists every feature and marks the ones the laptop lacks. Manual fan RPM must be
+inside the model's range. Expect perf modes and fans to work and some lighting or battery features
+not to. If you try one, please [open an issue](../../issues/new/choose).
 
 ### Left out on purpose
 

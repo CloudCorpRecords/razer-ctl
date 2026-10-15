@@ -17,6 +17,7 @@ pub mod process_guard;
 pub mod state;
 pub mod transport;
 pub mod types;
+pub mod unsupported;
 
 pub mod descriptor;
 

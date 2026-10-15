@@ -57,6 +57,22 @@ Windows 11, and nowhere else.
   tested on hardware; unit tests cover the rule.
 - `razer-cli fan info` in the 0.9.x notes below was a command that doesn't exist; it is
   `razer-cli auto info`.
+- **Unlisted laptops keep working without a setting they lack.** On a model not in the supported
+  list, a logo, keyboard brightness or charge limit that the EC answers with "not supported" (0x05)
+  is recorded and left alone: the profile keeps its own value for it, writes skip it, drift checks
+  ignore it, and its tray menu shows "(not supported)", disabled. One such answer used to fail every state read,
+  so the tray could change nothing but the refresh rate (#2). Supported models are unchanged: a
+  0x05 there is still an error. Not tested on hardware; unit tests cover the read, write and drift
+  paths.
+- **`razer-cli auto info` and `auto json` report what they can.** Both stopped at the first read
+  the laptop rejected and showed nothing after it. `info` now prints every feature and "not
+  supported" for the ones the laptop lacks. `json` sets those fields to `null` and names them in a
+  new `unsupported` field, left out when empty, so a model that answers every read prints the same
+  JSON as before. Other errors still fail the command.
+- **`razer-cli auto fan rpm` checks the laptop's own fan range.** It accepted 2000 to 5600 RPM, the
+  range across every known Blade. Outside a laptop's own range the EC runs at its floor or ceiling
+  and still reports success, so values outside `fan_rpm_range` (printed by `info`) are now
+  rejected with the speed the fan would really run at.
 
 ## 0.9.5: keyboard colors, a clearer menu, and a tray that can't die at login or lose its config
 Built and tested on `0x029F` (2026-09-23). Probes that set the scope, same machine: `0x070f` is Max

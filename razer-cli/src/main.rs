@@ -74,7 +74,9 @@ macro_rules! impl_unary_cli {
                         let arg = matches.get_one::<$arg_type>("ARG").unwrap();
                         $setter(device, *arg)
                     }
-                    Some(("info", _)) => Ok(println!("{}: {:?}", self.name(), $getter(device))),
+                    Some(("info", _)) => {
+                        $getter(device).map(|value| println!("{}: {:?}", self.name(), value))
+                    }
                     _ => Ok(()),
                 }
             }
@@ -317,7 +319,7 @@ impl Cli for feature::Fan {
                 .about("Control fan")
                 .subcommand(clap::Command::new("auto").about("Set fan mode to auto"))
                 .subcommand(clap::Command::new("manual").about("Set fan mode to manual"))
-                .subcommand(impl_unary_cmd_cli!{{clap::value_parser!(u16).range(librazer::state::FAN_RPM_MIN_ANY as i64..=librazer::state::FAN_RPM_MAX_ANY as i64)}, "rpm", "RPM", "Set fan rpm", "Fan RPM, a multiple of 100 (below this chassis's floor the EC silently runs at the floor; this parser rejects anything below every known floor)"})
+                .subcommand(impl_unary_cmd_cli!{{clap::value_parser!(u16).range(librazer::state::FAN_RPM_MIN_ANY as i64..=librazer::state::FAN_RPM_MAX_ANY as i64)}, "rpm", "RPM", "Set fan rpm", "Fan RPM, a multiple of 100, within this laptop's fan range (`info` prints it as fan_rpm_range)"})
                 .subcommand(impl_unary_cmd_cli!{{clap::value_parser!(MaxFanSpeedMode)}, "max", "MAX", "Control Max Fan Speed Mode", "Max Fan Speed Mode"})
                 .arg_required_else_help(true),
         )
@@ -326,6 +328,18 @@ impl Cli for feature::Fan {
     fn handle(&self, device: &device::Device, matches: &clap::ArgMatches) -> Result<()> {
         match matches.subcommand() {
             Some((ident, matches)) if ident == self.name() => {
+                // The parser takes any value some Blade can run; this laptop's own range is
+                // narrower. Outside it the EC holds its floor or ceiling and reports success.
+                if let Some(("rpm", m)) = matches.subcommand() {
+                    let rpm = *m.get_one::<u16>("RPM").unwrap();
+                    let (min, max) = device.info.fan_rpm_range;
+                    anyhow::ensure!(
+                        (min..=max).contains(&rpm),
+                        "{rpm} RPM is outside this laptop's fan range ({min}..={max} RPM); the \
+                         EC would run at {} RPM and report success",
+                        if rpm < min { min } else { max }
+                    );
+                }
                 impl_unary_handle_with_arg_cli! {<u16>(matches, device, "rpm", "RPM", false, command::set_fan_rpm)}
                 impl_unary_handle_cli! {<MaxFanSpeedMode>(matches, device, "max", "MAX", command::set_max_fan_speed_mode)}
 
@@ -388,20 +402,21 @@ impl Cli for feature::Perf {
                 Ok(())
             }
             Some(("info", _)) => {
-                let perf_mode = command::get_perf_mode(device);
+                // A failure goes back to `print_info`, which names this feature.
+                let perf_mode = command::get_perf_mode(device)?;
                 println!("Performance: {:?}", perf_mode);
-                if let Ok((PerfMode::Custom, _)) = perf_mode {
-                    let cpu_boost = command::get_cpu_boost(device);
-                    let gpu_boost = command::get_gpu_boost(device);
+                if let (PerfMode::Custom, _) = perf_mode {
+                    let cpu_boost = command::get_cpu_boost(device)?;
+                    let gpu_boost = command::get_gpu_boost(device)?;
                     println!("CPU: {:?}", cpu_boost);
                     println!("GPU: {:?}", gpu_boost);
 
-                    if let (Ok(CpuBoost::Boost) | Ok(CpuBoost::Undervolt), Ok(GpuBoost::High)) =
+                    if let (CpuBoost::Boost | CpuBoost::Undervolt, GpuBoost::High) =
                         (cpu_boost, gpu_boost)
                     {
                         println!(
                             "Max Fan Speed: {:?}",
-                            command::get_max_fan_speed_mode(device)
+                            command::get_max_fan_speed_mode(device)?
                         )
                     }
                 }
@@ -451,67 +466,142 @@ fn enumerate(as_json: bool) -> Result<()> {
 /// stable shape (no nested enum tuples) so downstream consumers -- a Home Assistant
 /// command-line sensor, a status line -- can parse it without knowing Rust's serde
 /// enum encoding. Mirrors what `perf/fan/... info` prints, gathered in one read.
+///
+/// A value this laptop doesn't report (the EC answers "not supported", 0x05) is `null`,
+/// and its field is named in `unsupported`, which is left out when empty. On a model that
+/// answers every read the output is unchanged. `keyboard_effect` keeps its own rule: any
+/// failure to read it is `null`, as before, and it is never listed.
 #[derive(serde::Serialize)]
 struct JsonStatus {
     name: &'static str,
     pid: String,
-    perf_mode: &'static str,
+    perf_mode: Option<String>,
     cpu_boost: Option<String>,
     gpu_boost: Option<String>,
-    fan_mode: &'static str,
+    fan_mode: Option<String>,
     fan_setpoint_rpm: Option<u16>,
-    fan_actual_rpm: [u16; 2],
+    fan_actual_rpm: Option<[u16; 2]>,
     /// False when no read could be confirmed: a lone-zero zone never cleared, or a stop
     /// was seen only once. One raw read is wrong about 3 times in 10 on this hardware.
-    fan_actual_trusted: bool,
-    keyboard_brightness_percent: u8,
-    logo_mode: String,
+    fan_actual_trusted: Option<bool>,
+    keyboard_brightness_percent: Option<u8>,
+    logo_mode: Option<String>,
     /// Keyboard backlight effect, read back from the EC (0x0f82). `null` when the device
     /// reports an effect we don't model (e.g. a Synapse-set Static/Reactive).
     keyboard_effect: Option<String>,
-    battery_care_percent: u8,
-    max_fan: bool,
+    battery_care_percent: Option<u8>,
+    max_fan: Option<bool>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    unsupported: Vec<&'static str>,
+}
+
+/// One read for `json`: a command this laptop lacks becomes `None` and its field is listed
+/// in `unsupported`; any other failure still fails the command.
+fn json_read<T>(
+    unsupported: &mut Vec<&'static str>,
+    field: &'static str,
+    read: Result<T>,
+) -> Result<Option<T>> {
+    match read {
+        Ok(value) => Ok(Some(value)),
+        Err(e) if librazer::error::is_not_supported(&e) => {
+            unsupported.push(field);
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 fn print_json(device: &device::Device) -> Result<()> {
-    use librazer::state::{brightness_to_percent, DeviceState, FanSpeed, PerfMode};
+    use librazer::state::brightness_to_percent;
 
-    let s = DeviceState::read(device)?;
-    let (fan, fan_actual_trusted) = librazer::state::sample_fan_rpm(device, 3)?;
-
-    let (perf_mode, cpu_boost, gpu_boost) = match s.perf_mode {
-        PerfMode::Battery => ("Battery", None, None),
-        PerfMode::Silent => ("Silent", None, None),
-        PerfMode::Balanced => ("Balanced", None, None),
-        PerfMode::Performance => ("Performance", None, None),
-        PerfMode::Hyperboost => ("Hyperboost", None, None),
-        PerfMode::Custom(cpu, gpu) => (
-            "Custom",
-            Some(format!("{:?}", cpu)),
-            Some(format!("{:?}", gpu)),
-        ),
+    // Each read stands alone, in the order `DeviceState::read` uses, so one the EC lacks
+    // doesn't hide the rest (issue #2: a Blade 15 2018 failed the whole command).
+    let mut unsupported = Vec::new();
+    let modes = json_read(
+        &mut unsupported,
+        "perf_mode",
+        command::get_perf_mode(device),
+    )?;
+    if modes.is_none() {
+        // The same command carries the fan mode.
+        unsupported.push("fan_mode");
+    }
+    let custom = matches!(modes, Some((PerfMode::Custom, _)));
+    let (cpu_boost, gpu_boost) = if custom {
+        (
+            json_read(
+                &mut unsupported,
+                "cpu_boost",
+                command::get_cpu_boost(device),
+            )?,
+            json_read(
+                &mut unsupported,
+                "gpu_boost",
+                command::get_gpu_boost(device),
+            )?,
+        )
+    } else {
+        (None, None)
     };
-
-    let (fan_mode, fan_setpoint_rpm) = match s.fan_speed {
-        FanSpeed::Auto => ("Auto", None),
-        FanSpeed::Manual(rpm) => ("Manual", Some(rpm)),
+    let fan_setpoint_rpm = match modes {
+        Some((_, FanMode::Manual)) => json_read(
+            &mut unsupported,
+            "fan_setpoint_rpm",
+            command::get_fan_rpm(device, FanZone::Zone1),
+        )?,
+        _ => None,
+    };
+    let fan = json_read(
+        &mut unsupported,
+        "fan_actual_rpm",
+        librazer::state::sample_fan_rpm(device, 3),
+    )?;
+    let brightness = json_read(
+        &mut unsupported,
+        "keyboard_brightness_percent",
+        command::get_keyboard_brightness(device),
+    )?;
+    let logo = json_read(
+        &mut unsupported,
+        "logo_mode",
+        command::get_logo_mode(device),
+    )?;
+    // Cosmetic, and older models may lack the getter: unknown is `null`, as before.
+    let keyboard_effect = command::get_keyboard_effect(device).unwrap_or(None);
+    let battery_care = json_read(
+        &mut unsupported,
+        "battery_care_percent",
+        command::get_battery_care(device),
+    )?;
+    // Max fan is a Custom-only toggle, false outside Custom; unknown without a perf mode.
+    let max_fan = match modes {
+        Some((PerfMode::Custom, _)) => json_read(
+            &mut unsupported,
+            "max_fan",
+            command::get_max_fan_speed_mode(device),
+        )?
+        .map(|mode| matches!(mode, MaxFanSpeedMode::Enable)),
+        Some(_) => Some(false),
+        None => None,
     };
 
     let status = JsonStatus {
         name: device.info.name,
         pid: format!("{:#06x}", device.info.pid),
-        perf_mode,
-        cpu_boost,
-        gpu_boost,
-        fan_mode,
+        perf_mode: modes.map(|(perf, _)| format!("{perf:?}")),
+        cpu_boost: cpu_boost.map(|b| format!("{b:?}")),
+        gpu_boost: gpu_boost.map(|b| format!("{b:?}")),
+        fan_mode: modes.map(|(_, fan)| format!("{fan:?}")),
         fan_setpoint_rpm,
-        fan_actual_rpm: [fan.fan1, fan.fan2],
-        fan_actual_trusted,
-        keyboard_brightness_percent: brightness_to_percent(s.lights_mode.keyboard_brightness),
-        logo_mode: format!("{:?}", s.lights_mode.logo_mode),
-        keyboard_effect: s.lights_mode.keyboard_effect.map(|e| format!("{e:?}")),
-        battery_care_percent: s.battery_care.to_percent(),
-        max_fan: s.max_fan,
+        fan_actual_rpm: fan.map(|(rpm, _)| [rpm.fan1, rpm.fan2]),
+        fan_actual_trusted: fan.map(|(_, trusted)| trusted),
+        keyboard_brightness_percent: brightness.map(brightness_to_percent),
+        logo_mode: logo.map(|mode| format!("{mode:?}")),
+        keyboard_effect: keyboard_effect.map(|e| format!("{e:?}")),
+        battery_care_percent: battery_care.map(|care| care.to_percent()),
+        max_fan,
+        unsupported,
     };
 
     println!("{}", serde_json::to_string_pretty(&status)?);
@@ -589,6 +679,7 @@ fn handle(
 ) -> Result<()> {
     if let Some(("info", _)) = matches.subcommand() {
         println!("Device: {:?}", device.info);
+        return print_info(device, matches, features);
     }
 
     if let Some(("json", _)) = matches.subcommand() {
@@ -599,6 +690,28 @@ fn handle(
         f.handle(device, matches)?;
     }
     Ok(())
+}
+
+/// `info` for every feature, one at a time: a feature this laptop lacks prints "not
+/// supported" and the rest still print. Stopping at the first one hid every feature after
+/// it (issue #2). Any other failure is printed too and fails the command at the end.
+fn print_info(
+    device: &device::Device,
+    matches: &clap::ArgMatches,
+    features: &Vec<Box<dyn Cli>>,
+) -> Result<()> {
+    let mut first_error = None;
+    for f in features {
+        if let Err(e) = f.handle(device, matches) {
+            if librazer::error::is_not_supported(&e) {
+                println!("{}: not supported", f.name());
+            } else {
+                println!("{}: error: {e}", f.name());
+                first_error.get_or_insert(e);
+            }
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 fn gen_cli_features(feature_list: &[&str]) -> Vec<Box<dyn Cli>> {
@@ -758,6 +871,23 @@ mod tests {
     #[test]
     fn the_argument_tree_is_valid() {
         cli().debug_assert();
+    }
+
+    #[test]
+    fn json_nulls_a_read_the_laptop_lacks_and_fails_on_any_other_error() {
+        use librazer::packet::ResponseError;
+        let mut unsupported = Vec::new();
+        let lacking: Result<u8> = Err(anyhow::Error::new(ResponseError::NotSupported));
+        assert_eq!(
+            json_read(&mut unsupported, "logo_mode", lacking).unwrap(),
+            None
+        );
+        assert_eq!(json_read(&mut unsupported, "pid", Ok(7)).unwrap(), Some(7));
+        assert_eq!(unsupported, vec!["logo_mode"]);
+
+        let busy: Result<u8> = Err(anyhow::Error::new(ResponseError::Busy));
+        assert!(json_read(&mut unsupported, "max_fan", busy).is_err());
+        assert_eq!(unsupported, vec!["logo_mode"]);
     }
 
     #[test]

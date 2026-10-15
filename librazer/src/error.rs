@@ -143,6 +143,16 @@ pub fn is_retryable(err: &anyhow::Error) -> bool {
     })
 }
 
+/// Whether the EC answered that it lacks the command (status 0x05), anywhere in the chain.
+pub fn is_not_supported(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<crate::packet::ResponseError>(),
+            Some(crate::packet::ResponseError::NotSupported)
+        )
+    })
+}
+
 impl ExitCode {
     /// Classify a failure into an exit status.
     ///

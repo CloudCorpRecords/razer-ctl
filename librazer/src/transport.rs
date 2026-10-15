@@ -9,6 +9,7 @@
 //! (e.g. a macOS dev box) with no hardware attached.
 
 use crate::packet::Packet;
+use crate::unsupported::UnsupportedLog;
 use anyhow::Result;
 
 /// Send a request packet and return the device's matched response packet.
@@ -32,6 +33,13 @@ pub trait HidTransport {
     fn send_once(&self, packet: Packet) -> Result<Packet> {
         self.send(packet)
     }
+
+    /// The optional settings this device has turned out not to have, when it is a model
+    /// that learns them (see [`crate::unsupported`]). `None`, the default, keeps every
+    /// "not supported" answer an error.
+    fn unsupported(&self) -> Option<&UnsupportedLog> {
+        None
+    }
 }
 
 /// Test-only `HidTransport` that records every request and replies via a
@@ -42,9 +50,13 @@ pub trait HidTransport {
 /// *matching* (transaction id, status) lives in `Device::send`, below this seam --
 /// so a response just needs the right arg bytes; `Packet::new`'s status is ignored.
 #[cfg(test)]
+type Responder = Box<dyn Fn(&Packet) -> Result<Packet>>;
+
+#[cfg(test)]
 pub struct MockTransport {
     sent: std::cell::RefCell<Vec<(u16, Vec<u8>)>>,
-    responder: Box<dyn Fn(&Packet) -> Packet>,
+    responder: Responder,
+    unsupported: Option<UnsupportedLog>,
 }
 
 #[cfg(test)]
@@ -59,10 +71,23 @@ impl MockTransport {
     /// Transport whose response is computed from each request -- use for read-path
     /// (get_*) tests that must return specific register values.
     pub fn with_responder(f: impl Fn(&Packet) -> Packet + 'static) -> Self {
+        Self::with_fallible_responder(move |req| Ok(f(req)))
+    }
+
+    /// Like [`Self::with_responder`], but a request can fail the way `Device::send` does,
+    /// e.g. with a `ResponseError::NotSupported` for a command the EC lacks.
+    pub fn with_fallible_responder(f: impl Fn(&Packet) -> Result<Packet> + 'static) -> Self {
         Self {
             sent: std::cell::RefCell::new(Vec::new()),
             responder: Box::new(f),
+            unsupported: None,
         }
+    }
+
+    /// Behave like a model that learns what it lacks (the generic profile).
+    pub fn learning(mut self) -> Self {
+        self.unsupported = Some(UnsupportedLog::default());
+        self
     }
 
     /// (command, args) of every packet sent so far, in order.
@@ -82,7 +107,11 @@ impl HidTransport for MockTransport {
         let response = (self.responder)(&packet);
         let args = packet.get_args()[..packet.data_len()].to_vec();
         self.sent.borrow_mut().push((packet.command(), args));
-        Ok(response)
+        response
+    }
+
+    fn unsupported(&self) -> Option<&UnsupportedLog> {
+        self.unsupported.as_ref()
     }
 }
 

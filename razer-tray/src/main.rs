@@ -458,6 +458,7 @@ fn main() -> Result<()> {
             {
                 last_hover_refresh = now;
                 if let Ok(observed) = DeviceState::read(&device) {
+                    state.track_unsupported(&device, Some(&tray_icon));
                     state.observe(observed, Some(&tray_icon));
                 }
                 state.refresh_fan(&device);
@@ -711,6 +712,7 @@ fn main() -> Result<()> {
                         // Whether the config was applied before this reading, which may adopt
                         // a profile: a reading that adopts must not be written back.
                         let applying = state.mode().writes_config();
+                        state.track_unsupported(&device, Some(&tray_icon));
                         state.observe(observed, Some(&tray_icon));
 
                         // Adopt an externally-made keyboard-brightness change (e.g. the

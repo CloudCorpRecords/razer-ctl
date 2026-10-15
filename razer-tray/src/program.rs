@@ -10,6 +10,7 @@ use librazer::command;
 use librazer::device;
 use librazer::keyboard::{Frame, KeyboardPreset};
 use librazer::types::BatteryCare;
+use librazer::unsupported::{Optional, Unsupported};
 use tray_icon::menu::Menu;
 
 use librazer::observe::{self, ConfigHealth, Mode, Reading, Unset};
@@ -149,6 +150,9 @@ pub struct ProgramState {
     /// This model's keyboard geometry is mapped (`keyboard::supports_custom_frame`); set by
     /// `main` once the device is known. Off, the color menu is hidden and nothing is painted.
     pub custom_colors: bool,
+    /// Settings this laptop turned out not to have: their menus are disabled and the
+    /// tooltip leaves them out. See `librazer::unsupported`.
+    pub unsupported: Unsupported,
     /// Named colors for the menu (config).
     pub keyboard_presets: Vec<KeyboardPreset>,
     /// Draw the battery bar over a custom color (config).
@@ -185,6 +189,7 @@ impl ProgramState {
                 windows_power_mode: None,
                 refresh_rates: &[],
                 custom_colors: false,
+                unsupported: Unsupported::default(),
                 keyboard_presets: &config.keyboard_presets,
                 battery_bar: config.keyboard_battery_bar,
                 ac_power,
@@ -217,6 +222,7 @@ impl ProgramState {
             warning: None,
             refresh_rates: Vec::new(),
             custom_colors: false,
+            unsupported: Unsupported::default(),
             keyboard_presets: config.keyboard_presets,
             battery_bar: config.keyboard_battery_bar,
             painted: None,
@@ -239,6 +245,7 @@ impl ProgramState {
             },
             refresh_rates: &self.refresh_rates,
             custom_colors: self.custom_colors,
+            unsupported: self.unsupported,
             keyboard_presets: &self.keyboard_presets,
             battery_bar: self.battery_bar,
             ac_power: self.ac_power,
@@ -258,6 +265,20 @@ impl ProgramState {
                 }
             }
             Err(e) => log::warn!("menu rebuild failed: {e:?}"),
+        }
+    }
+
+    /// Pick up the settings `device` has learned it lacks, rebuilding the menu when that
+    /// changed. Call after each device write, and after each read before `observe`.
+    pub fn track_unsupported(
+        &mut self,
+        device: &device::Device,
+        tray_icon: Option<&tray_icon::TrayIcon>,
+    ) {
+        let now = librazer::state::unsupported_on(device);
+        if now != self.unsupported {
+            self.unsupported = now;
+            self.rebuild_menu(tray_icon);
         }
     }
 
@@ -299,6 +320,8 @@ impl ProgramState {
     /// Adopting writes nothing to the device: the reading already is the device's state
     /// (`DeviceState::read` forbids writing one back).
     pub fn observe(&mut self, observed: DeviceState, tray_icon: Option<&tray_icon::TrayIcon>) {
+        // Placeholders for settings this laptop lacks must not become intent.
+        let observed = observed.with_lacking_from(&self.device_state, self.unsupported);
         self.observed = observed;
         let reading = observe::on_reading(
             self.mode(),
@@ -627,10 +650,11 @@ impl ProgramState {
         }
 
         let mut lights_line = Vec::new();
-        if s.battery_care != BatteryCare::DISABLE {
+        let has = |f: Optional| !self.unsupported.contains(f);
+        if has(Optional::BatteryCare) && s.battery_care != BatteryCare::DISABLE {
             lights_line.push((P_CHARGE, format!("🔋 {}%", s.battery_care.to_percent())));
         }
-        if s.lights_mode.keyboard_brightness > 0 {
+        if has(Optional::KeyboardBrightness) && s.lights_mode.keyboard_brightness > 0 {
             lights_line.push((
                 P_BRIGHTNESS,
                 format!(
@@ -641,7 +665,9 @@ impl ProgramState {
         }
         // No always-on marker: it was a bare 💡 at the end of this line, the one field with no
         // value, and it read as a number that had gone missing. The menu shows the setting.
-        lights_line.push((P_LOGO, format!("Logo {:?}", s.lights_mode.logo_mode)));
+        if has(Optional::Logo) {
+            lights_line.push((P_LOGO, format!("Logo {:?}", s.lights_mode.logo_mode)));
+        }
 
         let layout = vec![vec![(P_MODE, mode)], fan_line, gpu_line, lights_line];
 
@@ -708,13 +734,15 @@ impl ProgramState {
             Err(e) => {
                 log::warn!("apply failed: {e:?}");
                 if let Ok(real) = DeviceState::read(device) {
-                    self.observed = real;
+                    self.unsupported = librazer::state::unsupported_on(device);
+                    self.observed = real.with_lacking_from(&self.device_state, self.unsupported);
                 }
             }
         }
         // After the effect write, which would otherwise replace the color.
         self.paint_keyboard(device, true);
         self.apply_os_settings();
+        self.unsupported = librazer::state::unsupported_on(device);
         self.rebuild_menu(Some(tray_icon));
         self.refresh_fan(device);
         self.refresh_ui(tray_icon);
@@ -916,6 +944,7 @@ impl ProgramState {
         let was_applying = self.mode().writes_config();
         let drift = match DeviceState::read(device) {
             Ok(observed) => {
+                self.track_unsupported(device, Some(tray_icon));
                 self.observe(observed, Some(tray_icon));
                 observed.drifted_from(&self.device_state, device, &mut self.zone2_guard)
             }
@@ -955,10 +984,11 @@ impl ProgramState {
                     Err(e) => log::warn!("{reason}: re-assert failed: {e:?}"),
                     Ok(()) => match DeviceState::read(device) {
                         Ok(real) => {
-                            if real.enforced_fields_differ(&self.device_state) {
+                            if real.enforced_fields_differ_on(&self.device_state, device) {
                                 log::warn!("{reason}: still differs after re-assert: {real:?}");
                             }
-                            self.observed = real;
+                            self.observed =
+                                real.with_lacking_from(&self.device_state, self.unsupported);
                         }
                         Err(_) => {
                             let brightness = self.observed.lights_mode.keyboard_brightness;

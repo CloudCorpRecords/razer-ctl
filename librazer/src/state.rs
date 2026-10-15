@@ -890,6 +890,45 @@ pub struct ConfigState {
     /// While a custom color is set, show the battery level on the 1-0 keys.
     #[serde(default)]
     pub keyboard_battery_bar: bool,
+    /// `true`: `ac_state` has never been set. The tray does not apply it; the first time it
+    /// runs plugged in, it reads the laptop's settings into it instead (and writes nothing).
+    /// Only a new config has it, and it is dropped once the profile is set. Changing the
+    /// values in `ac_state` by hand also sets the profile (see [`Self::unset`]). Absent in
+    /// every config written before it existed, which therefore load exactly as before.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ac_state_unset: bool,
+    /// As `ac_state_unset`, for `battery_state` and running on battery.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub battery_state_unset: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+impl ConfigState {
+    /// The config of a new install: today's defaults for every option, and both profiles
+    /// unset, so the tray takes them from the laptop instead of imposing the defaults on it.
+    pub fn first_run() -> Self {
+        Self {
+            ac_state_unset: true,
+            battery_state_unset: true,
+            ..Self::default()
+        }
+    }
+
+    /// Which profiles are still waiting for their first reading.
+    ///
+    /// A profile counts as unset only while it still holds the placeholder it was written
+    /// with. A hand edit to its values while the flag is still in the file means the user
+    /// set it, so the edit is applied rather than replaced by a reading.
+    pub fn unset(&self) -> crate::observe::Unset {
+        let placeholder = Self::default();
+        crate::observe::Unset {
+            ac: self.ac_state_unset && self.ac_state == placeholder.ac_state,
+            battery: self.battery_state_unset && self.battery_state == placeholder.battery_state,
+        }
+    }
 }
 
 /// One step of a multi-write apply. A write the EC rejected is kept in `first` and the
@@ -948,6 +987,8 @@ impl Default for ConfigState {
             cycle_perf_hotkey: None,
             keyboard_presets: keyboard::default_presets(),
             keyboard_battery_bar: false,
+            ac_state_unset: false,
+            battery_state_unset: false,
         }
     }
 }
@@ -2469,5 +2510,126 @@ mod tests {
         // Configs from before this field start with nothing to put back.
         let old: ConfigState = toml::from_str("match_windows_power_mode = true\n").unwrap();
         assert_eq!(old.windows_power_mode_before, PowerModeBefore::default());
+    }
+
+    /// Written by 0.9.5 (`toml::to_string_pretty`), before the unset flags existed.
+    const CONFIG_0_9_5: &str = r##"enforce = true
+reassert_on_resume = true
+match_windows_power_mode = false
+keyboard_battery_bar = false
+
+[ac_state]
+battery_care = 80
+max_fan = true
+display_refresh_hz = 240
+
+[ac_state.perf_mode]
+Custom = [
+    "Boost",
+    "High",
+]
+
+[ac_state.lights_mode]
+logo_mode = "Off"
+keyboard_brightness = 0
+always_on = "Disable"
+
+[ac_state.fan_speed]
+Manual = 3500
+
+[battery_state]
+perf_mode = "Battery"
+battery_care = 80
+fan_speed = "Auto"
+max_fan = false
+
+[battery_state.lights_mode]
+logo_mode = "Off"
+keyboard_brightness = 0
+always_on = "Disable"
+
+[[app_profiles]]
+process = "game.exe"
+processes = []
+enabled = true
+priority = 0
+perf_mode = "Performance"
+
+[windows_power_mode_before]
+
+[[keyboard_presets]]
+name = "White"
+colors = ["#ffffff"]
+"##;
+
+    #[test]
+    fn a_config_from_before_the_unset_flags_loads_and_saves_unchanged() {
+        let mut expected = ConfigState::default();
+        expected.ac_state.perf_mode = PerfMode::Custom(CpuBoost::Boost, GpuBoost::High);
+        expected.ac_state.max_fan = true;
+        expected.ac_state.fan_speed = FanSpeed::Manual(3500);
+        expected.ac_state.display_refresh_hz = Some(240);
+        expected.battery_state.battery_care = BatteryCare::from_percent(80).unwrap();
+        expected.enforce = true;
+        expected.keyboard_presets.truncate(1);
+        expected.app_profiles.push(AppProfile {
+            process: "game.exe".into(),
+            perf_mode: Some(PerfMode::Performance),
+            ..AppProfile::default()
+        });
+
+        let cfg: ConfigState = toml::from_str(CONFIG_0_9_5).unwrap();
+        assert_eq!(cfg, expected);
+        assert!(!cfg.ac_state_unset && !cfg.battery_state_unset);
+        assert_eq!(cfg.unset(), crate::observe::Unset::default(), "both set");
+        // Saved again, it is byte for byte what 0.9.5 wrote: no new keys appear.
+        assert_eq!(toml::to_string_pretty(&cfg).unwrap(), CONFIG_0_9_5);
+        // A minimal hand-written file is as set as before too.
+        let minimal: ConfigState = toml::from_str("enforce = true\n").unwrap();
+        assert_eq!(minimal.unset(), crate::observe::Unset::default());
+    }
+
+    #[test]
+    fn a_new_config_keeps_its_profiles_unset_across_a_save() {
+        let cfg = ConfigState::first_run();
+        assert_eq!(
+            cfg.unset(),
+            crate::observe::Unset {
+                ac: true,
+                battery: true
+            }
+        );
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        assert!(text.contains("ac_state_unset = true"), "{text}");
+        assert!(text.contains("battery_state_unset = true"), "{text}");
+        let back: ConfigState = toml::from_str(&text).unwrap();
+        assert_eq!(back, cfg);
+        assert_eq!(back.unset(), cfg.unset());
+        // Everything but the flags is today's default.
+        assert_eq!(
+            ConfigState {
+                ac_state_unset: false,
+                battery_state_unset: false,
+                ..back
+            },
+            ConfigState::default()
+        );
+    }
+
+    #[test]
+    fn a_hand_edit_to_an_unset_profile_sets_it() {
+        let text = toml::to_string_pretty(&ConfigState::first_run())
+            .unwrap()
+            .replace(r#"perf_mode = "Battery""#, r#"perf_mode = "Silent""#);
+        let cfg: ConfigState = toml::from_str(&text).unwrap();
+        assert!(cfg.battery_state_unset, "the flag is still in the file");
+        assert_eq!(
+            cfg.unset(),
+            crate::observe::Unset {
+                ac: true,
+                battery: false
+            },
+            "but the edited battery profile is applied, not replaced by a reading"
+        );
     }
 }

@@ -12,6 +12,7 @@ pub mod error;
 pub mod feature;
 pub mod keyboard;
 pub mod matching;
+pub mod observe;
 pub mod process_guard;
 pub mod state;
 pub mod transport;

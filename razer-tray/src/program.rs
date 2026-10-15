@@ -769,7 +769,7 @@ impl ProgramState {
         let drift = match DeviceState::read(device) {
             Ok(observed) => {
                 self.observed = observed;
-                observed.enforced_fields_differ(&self.device_state)
+                observed.drifted_from(&self.device_state, device)
             }
             Err(e)
                 if e.downcast_ref::<librazer::error::PerfZonesDiverged>()

@@ -12,6 +12,13 @@ Windows 11, and nowhere else.
   the generic one. Everything worked for them except manual fan RPM, which holds the fans near
   3200/3300 whatever the set point; that is still open. Not tested here.
 
+**Reliability**
+- **Fans.** A manual fan whose zone 2 set point differs from zone 1's now counts as drift, so it
+  is put back wherever other drift is ("Undo changes made by Synapse", and the startup, resync
+  and wake checks). The tray read zone 1 only, so another tool's zone 2 write, or a two-zone
+  write cut off between the zones, went unseen. One more read per check in Manual. From
+  upstream blauzim/razer-ctl `435c870`. Not tested on hardware.
+
 ## 0.9.5: keyboard colors, a clearer menu, and a tray that can't die at login or lose its config
 Built and tested on `0x029F` (2026-09-23). Probes that set the scope, same machine: `0x070f` is Max
 Fan (fans 2100 → 4700 RPM, no charging above the limit); tray and CLI running together don't cause

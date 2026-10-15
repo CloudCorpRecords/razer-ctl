@@ -611,6 +611,25 @@ impl DeviceState {
             || self.battery_care != intended.battery_care
     }
 
+    /// [`Self::enforced_fields_differ`], for a state just read from `device`, plus what
+    /// [`Self::read`] cannot see: in Manual, zone 2's set point apart from zone 1's (see
+    /// [`command::fan_setpoint_zones_differ`]). Costs one extra read in Manual when the
+    /// enforced fields match, none otherwise. A failed zone 2 read is not drift: like every
+    /// other failed poll, it leaves the last decision standing.
+    pub fn drifted_from(&self, intended: &DeviceState, device: &impl HidTransport) -> bool {
+        if self.enforced_fields_differ(intended) {
+            return true;
+        }
+        match self.fan_speed {
+            FanSpeed::Manual(rpm) => command::fan_setpoint_zones_differ(device, rpm)
+                .unwrap_or_else(|e| {
+                    log::debug!("zone 2 fan set point read failed: {e:?}");
+                    false
+                }),
+            FanSpeed::Auto => false,
+        }
+    }
+
     fn perf_delta(&self, cpu_boost: Option<CpuBoost>, gpu_boost: Option<GpuBoost>) -> Self {
         DeviceState {
             perf_mode: if let PerfMode::Custom(cb, gb) = self.perf_mode {
@@ -1733,6 +1752,37 @@ mod tests {
         let mut other_batt = base;
         other_batt.battery_care = BatteryCare::DISABLE;
         assert!(other_batt.enforced_fields_differ(&base));
+    }
+
+    #[test]
+    fn drifted_from_sees_a_zone_2_set_point_left_behind() {
+        // Zone 1 at 3000 as intended, zone 2 still at 4000: a zone-1-only read matched
+        // intent, so Enforce never repaired it.
+        let mock = MockTransport::with_responder(|req| {
+            let zone = req.get_args()[1];
+            reply(&[0, zone, if zone == 1 { 30 } else { 40 }])
+        });
+        let s = dstate(PerfMode::Silent, FanSpeed::Manual(3000), 0);
+        assert!(!s.enforced_fields_differ(&s));
+        assert!(s.drifted_from(&s, &mock));
+    }
+
+    #[test]
+    fn drifted_from_reads_nothing_more_outside_manual_or_on_known_drift() {
+        let mock = MockTransport::echo();
+        let auto = dstate(PerfMode::Silent, FanSpeed::Auto, 0);
+        assert!(!auto.drifted_from(&auto, &mock));
+        let manual = dstate(PerfMode::Silent, FanSpeed::Manual(3000), 0);
+        assert!(manual.drifted_from(&auto, &mock));
+        assert_eq!(mock.sent_count(), 0);
+    }
+
+    #[test]
+    fn drifted_from_treats_a_failed_zone_2_read_as_no_drift() {
+        // The set-point getter demands the zone echoed back; a wrong one is a failed read.
+        let mock = MockTransport::with_responder(|_| reply(&[0, 9, 40]));
+        let s = dstate(PerfMode::Silent, FanSpeed::Manual(3000), 0);
+        assert!(!s.drifted_from(&s, &mock));
     }
 
     #[test]

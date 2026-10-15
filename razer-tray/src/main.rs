@@ -686,7 +686,7 @@ fn main() -> Result<()> {
                         // whenever you're active (incl. right after you return to the
                         // machine); the wake reconcile covers the wake case.
                         if state.enforce
-                            && state.observed.enforced_fields_differ(&state.device_state)
+                            && state.observed.drifted_from(&state.device_state, &device)
                         {
                             log::info!("enforce: device drifted; re-asserting intended state");
                             if let Err(e) = state.device_state.enforce_to(&device) {

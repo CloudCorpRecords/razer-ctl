@@ -186,6 +186,32 @@ pub fn get_fan_rpm(device: &impl HidTransport, fan_zone: FanZone) -> Result<u16>
     Ok(response.get_args()[2] as u16 * 100)
 }
 
+/// Whether zone 2's manual set point differs from zone 1's, given zone 1's value from a
+/// read just made (`DeviceState::read` reports only zone 1).
+///
+/// Every write here sets both zones to the same value, so a difference means something
+/// else wrote one zone (another tool), or a two-zone write was cut off between the zones
+/// (a process killed mid-write). A zone-1-only read cannot see either, so Enforce never
+/// repaired it. Reported by upstream (blauzim/razer-ctl 435c870).
+///
+/// A difference is re-read once, both zones, before it is believed: another process's
+/// two-zone write can land between our reads, as with the perf zones in `get_perf_mode`.
+/// Costs one extra read when the zones agree. Returns a bool rather than a typed error on
+/// purpose: unlike the perf zones, divergence here is treated as drift (repaired only
+/// where the caller already writes), because zone 2's set-point read-back has not been
+/// measured on any chassis yet.
+pub fn fan_setpoint_zones_differ(device: &impl HidTransport, zone1_rpm: u16) -> Result<bool> {
+    if get_fan_rpm(device, FanZone::Zone2)? == zone1_rpm {
+        return Ok(false);
+    }
+    let zone1 = get_fan_rpm(device, FanZone::Zone1)?;
+    let zone2 = get_fan_rpm(device, FanZone::Zone2)?;
+    if zone1 != zone2 {
+        log::warn!("fan set points disagree: zone 1 = {zone1} RPM, zone 2 = {zone2} RPM");
+    }
+    Ok(zone1 != zone2)
+}
+
 pub fn get_fan_actual_rpm(device: &impl HidTransport, fan_zone: FanZone) -> Result<u16> {
     let response = device.send(Packet::new(0x0d88, &[0, fan_zone as u8, 0]))?;
     ensure!(response.get_args()[1] == fan_zone as u8);
@@ -699,6 +725,33 @@ mod tests {
             reply(&[0, zone, 30])
         });
         assert_eq!(get_fan_rpm(&mock, FanZone::Zone1).unwrap(), 3000);
+    }
+
+    #[test]
+    fn fan_setpoint_zones_agreeing_cost_one_read() {
+        let mock = MockTransport::with_responder(|req| reply(&[0, req.get_args()[1], 30]));
+        assert!(!fan_setpoint_zones_differ(&mock, 3000).unwrap());
+        assert_eq!(mock.sent(), vec![(0x0d81, vec![0, 2, 0])], "zone 2 only");
+    }
+
+    #[test]
+    fn fan_setpoint_zones_persistently_diverged_are_reported() {
+        // Zone 1 at 3000, zone 2 left at 4000 by a write cut off between the zones.
+        let mock = MockTransport::with_responder(|req| {
+            let zone = req.get_args()[1];
+            reply(&[0, zone, if zone == 1 { 30 } else { 40 }])
+        });
+        assert!(fan_setpoint_zones_differ(&mock, 3000).unwrap());
+        assert_eq!(mock.sent_count(), 3, "zone 2, then both zones to confirm");
+    }
+
+    #[test]
+    fn fan_setpoint_zones_racing_a_write_are_not_reported() {
+        // Another process moves both zones from 3000 to 4000 between the caller's zone 1
+        // read and our zone 2 read; the re-read sees both at 4000.
+        let mock = MockTransport::with_responder(|req| reply(&[0, req.get_args()[1], 40]));
+        assert!(!fan_setpoint_zones_differ(&mock, 3000).unwrap());
+        assert_eq!(mock.sent_count(), 3);
     }
 
     #[test]

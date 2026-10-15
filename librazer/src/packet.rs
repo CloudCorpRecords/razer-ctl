@@ -200,6 +200,19 @@ impl Packet {
     /// *busy* EC (come back in a moment) apart from a hard rejection -- previously
     /// every non-success collapsed into one opaque error and drew the same flat
     /// backoff. `Ok(())` means the response is a genuine success for this request.
+    /// The header fields `classify_response` checks, for an error message: a response
+    /// that doesn't match says which field differs.
+    pub fn header(&self) -> String {
+        format!(
+            "status {:#04x}, command {:#06x}, id {:#04x}, remaining {}, size {}",
+            self.status,
+            self.command(),
+            self.id,
+            self.remaining_packets,
+            self.data_size
+        )
+    }
+
     pub fn classify_response(&self, report: &Packet) -> Result<(), ResponseError> {
         if (report.command_class, report.command_id, report.id)
             != (self.command_class, self.command_id, self.id)

@@ -194,6 +194,19 @@ impl Device {
                 Ok(()) => return Ok(response),
                 Err(e) => e,
             };
+            // A mismatch alone doesn't say which field was off; the header does.
+            let with_header = |e: ResponseError| {
+                let error = anyhow::Error::new(e);
+                if e == ResponseError::Mismatch {
+                    error.context(format!(
+                        "sent {}, got {}",
+                        report.header(),
+                        response.header()
+                    ))
+                } else {
+                    error
+                }
+            };
 
             // NotSupported is a definitive answer from the firmware -- the command will
             // never succeed on this device, so retrying just burns ~2.5s before failing.
@@ -203,11 +216,11 @@ impl Device {
             // Busy means the EC did not action it, so even a single-shot send may retry that;
             // any other answer to a single-shot send is final.
             if err == ResponseError::NotSupported || (!retry_failure && !err.is_busy()) {
-                return Err(anyhow::Error::new(err));
+                return Err(with_header(err));
             }
 
             if last {
-                return Err(anyhow::Error::new(err).context(format!(
+                return Err(with_header(err).context(format!(
                     "failed to match report after {MAX_RETRIES} attempts"
                 )));
             }

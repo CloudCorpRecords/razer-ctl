@@ -69,6 +69,9 @@ Windows 11, and nowhere else.
   supported" for the ones the laptop lacks. `json` sets those fields to `null` and names them in a
   new `unsupported` field, left out when empty, so a model that answers every read prints the same
   JSON as before. Other errors still fail the command.
+- **A response that doesn't match says how.** "Response does not match the report" now adds the
+  sent and received header (status, command, id, remaining packets, size). On #2's Blade 15 2018,
+  `0x0d88` (fan RPM) fails this way and the error didn't say which field differed.
 - **`razer-cli auto fan rpm` checks the laptop's own fan range.** It accepted 2000 to 5600 RPM, the
   range across every known Blade. Outside a laptop's own range the EC runs at its floor or ceiling
   and still reports success, so values outside `fan_rpm_range` (printed by `info`) are now

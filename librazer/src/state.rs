@@ -1089,7 +1089,8 @@ pub fn sample_fan_rpm(device: &impl HidTransport, max_reads: usize) -> Result<(F
 
 /// Stops counting a zone 2 fan set point as drift once repairing it stops working.
 ///
-/// Nobody has measured how zone 2's set point reads back on any chassis. If one reports it
+/// Zone 2's set point reads back as written on `0x029F` (2026-10-14: 3000 and 4000 RPM both
+/// echoed on both zones), and is unmeasured everywhere else. If a chassis reports it
 /// differently from what was written, every check would see drift and every repair would
 /// rewrite the whole enforced profile, forever. So after [`ZONE2_MAX_REPAIRS`] detections in a
 /// row with no agreeing read between them, the zone 2 check is off until the tray restarts,

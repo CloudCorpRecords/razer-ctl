@@ -19,7 +19,8 @@ Windows 11, and nowhere else.
   between the zones, went unseen. One more read per check in Manual. After 3 repairs in a row
   that don't hold, the tray stops checking zone 2 until it restarts and says so in the log, so a
   chassis that reports zone 2 differently can't trigger a rewrite on every check. From upstream
-  blauzim/razer-ctl `435c870`. Not tested on hardware.
+  blauzim/razer-ctl `435c870`. On `0x029F` zone 2 reads back as written (3000 and 4000 RPM,
+  2026-10-14); the repair path itself is not tested on hardware.
 
 ## 0.9.5: keyboard colors, a clearer menu, and a tray that can't die at login or lose its config
 Built and tested on `0x029F` (2026-09-23). Probes that set the scope, same machine: `0x070f` is Max

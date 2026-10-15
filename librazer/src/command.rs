@@ -200,8 +200,8 @@ pub fn get_fan_rpm(device: &impl HidTransport, fan_zone: FanZone) -> Result<u16>
 /// that moved both zones together between our reads is drift too.
 /// Costs one extra read when the zones agree. Returns a bool rather than a typed error on
 /// purpose: unlike the perf zones, divergence here is treated as drift (repaired only
-/// where the caller already writes), because zone 2's set-point read-back has not been
-/// measured on any chassis yet.
+/// where the caller already writes), because zone 2's set-point read-back is measured on
+/// `0x029F` only (2026-10-14, echoes zone 1).
 pub fn fan_setpoint_zones_differ(device: &impl HidTransport, intended_rpm: u16) -> Result<bool> {
     if get_fan_rpm(device, FanZone::Zone2)? == intended_rpm {
         return Ok(false);

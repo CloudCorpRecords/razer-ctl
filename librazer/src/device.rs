@@ -203,7 +203,7 @@ impl Device {
             .device_list()
             .filter(|info| info.vendor_id() == Device::RAZER_VID)
             .map(|info| info.product_id())
-            .collect::<std::collections::HashSet<_>>()
+            .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
 
@@ -242,9 +242,17 @@ impl Device {
             crate::matching::FALLBACK_FAN_RPM_RANGE
         );
         let mut last_err = None;
-        for pid in &pid_list {
-            match Device::new(crate::matching::fallback_descriptor(*pid)) {
-                Ok(device) => return Ok(device),
+        // Every Razer device on the machine is in `pid_list`, an attached mouse included,
+        // and the probe in `Device::new` accepts one of those too. See
+        // `fallback_pid_order` for why the order matters.
+        for pid in crate::matching::fallback_pid_order(&pid_list) {
+            match Device::new(crate::matching::fallback_descriptor(pid)) {
+                Ok(device) => {
+                    log::info!(
+                        "Using PID {pid:#06x} of {pid_list:#06x?} for model {model_number_prefix}"
+                    );
+                    return Ok(device);
+                }
                 Err(e) => last_err = Some(e),
             }
         }

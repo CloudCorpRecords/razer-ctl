@@ -60,9 +60,60 @@ pub fn fallback_descriptor(pid: u16) -> Descriptor {
     }
 }
 
+/// The order in which `Device::detect` tries an unrecognized laptop's PIDs.
+///
+/// Why this exists: every Razer device on the machine shows up in enumeration -- a
+/// Razer mouse or keyboard plugged into the laptop too -- and they all speak the same
+/// report protocol, so the `0x0084` probe in `Device::new` accepts a mouse just as
+/// readily as the laptop's EC. The list used to come out of a `HashSet`, whose order is
+/// randomized per process, so each run bound the laptop or the mouse by chance. Issue #2
+/// (Blade 15 2018, `0x023b`, with a DeathAdder Elite `0x005c` attached) showed exactly
+/// that: the fan range flipped between runs and the same command alternated between
+/// working and "not supported (0x05)".
+///
+/// PIDs the laptop table knows go first; the rest follow highest PID first, because Blade
+/// PIDs sit in `0x02xx` while Razer mice sit mostly in `0x00xx`. That is a heuristic, not
+/// a guarantee (Razer keyboards also use `0x02xx`), but the order is now at least the
+/// same on every run.
+pub fn fallback_pid_order(pids: &[u16]) -> Vec<u16> {
+    let mut ordered = pids.to_vec();
+    ordered.sort_unstable_by_key(|&pid| {
+        (
+            crate::descriptor::fan_range_for_pid(pid).is_none(),
+            std::cmp::Reverse(pid),
+        )
+    });
+    ordered.dedup();
+    ordered
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- which PID an unrecognized laptop binds ----
+
+    #[test]
+    fn fallback_order_puts_the_known_laptop_before_an_attached_mouse() {
+        // Issue #2: Blade 15 2018 (0x023b) with a DeathAdder Elite (0x005c) attached.
+        // Both orders must give the same answer; the HashSet used to hand us either.
+        assert_eq!(fallback_pid_order(&[0x005c, 0x023b]), vec![0x023b, 0x005c]);
+        assert_eq!(fallback_pid_order(&[0x023b, 0x005c]), vec![0x023b, 0x005c]);
+    }
+
+    #[test]
+    fn fallback_order_prefers_higher_pids_when_none_are_in_the_table() {
+        // 0x02e1 is a Blade the table doesn't list; 0x007a is a mouse-range PID.
+        assert_eq!(fallback_pid_order(&[0x007a, 0x02e1]), vec![0x02e1, 0x007a]);
+    }
+
+    #[test]
+    fn fallback_order_drops_duplicates() {
+        assert_eq!(
+            fallback_pid_order(&[0x023b, 0x005c, 0x023b]),
+            vec![0x023b, 0x005c]
+        );
+    }
 
     fn desc(prefix: &'static str, pid: u16) -> Descriptor {
         Descriptor {

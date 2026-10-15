@@ -47,7 +47,8 @@ Windows 11, and nowhere else.
   the fan range changed between runs and the same command alternated between working and "not
   supported (0x05)" ([#2](https://github.com/sqmagellan/razer-ctl/issues/2), Blade 15 2018 with a
   DeathAdder Elite). PIDs in the laptop table now go first, then the rest highest first, and the
-  log names the PID in use. Not tested on hardware here.
+  log names the PID in use. Not tested on hardware here; the reporter's test build bound the
+  laptop on every run.
 
 ## 0.9.5: keyboard colors, a clearer menu, and a tray that can't die at login or lose its config
 Built and tested on `0x029F` (2026-09-23). Probes that set the scope, same machine: `0x070f` is Max

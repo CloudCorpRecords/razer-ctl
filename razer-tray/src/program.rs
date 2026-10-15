@@ -90,6 +90,9 @@ fn log_tooltip_transition(tooltip: &str) {
     }
 }
 
+/// How long a failed fan RPM read pauses the next ones (see `refresh_fan`).
+const FAN_READ_PAUSE: std::time::Duration = std::time::Duration::from_secs(60);
+
 pub struct ProgramState {
     pub device_state: DeviceState,
     pub observed: DeviceState,
@@ -106,6 +109,10 @@ pub struct ProgramState {
     /// are not trustworthy on this hardware -- roughly 3 in 10 carried one impossible
     /// zone -- so nothing may write `fan_actual` except [`Self::refresh_fan`].
     fan_filter: FanRpmFilter,
+    /// No fan RPM reads before this. A failed read costs up to 5 tries per zone on the UI
+    /// thread (about 4 s); issue #2's Blade 15 2018 fails every one, so hovering froze the
+    /// tray. A failure pauses the reads for [`FAN_READ_PAUSE`].
+    fan_reads_paused_until: Option<std::time::Instant>,
     pub ac_power: bool,
     /// Windows has said which power source this is at least once. Until then `ac_power` is
     /// a guess (AC), which a config with every profile set acts on as it always has, and a
@@ -205,6 +212,7 @@ impl ProgramState {
             menu,
             fan_actual: None,
             fan_filter: FanRpmFilter::default(),
+            fan_reads_paused_until: None,
             ac_power,
             power_known: power.is_some(),
             adopt_not_before: None,
@@ -470,9 +478,20 @@ impl ProgramState {
     /// distrusts are handled identically -- the previous value stands -- because a stale
     /// RPM is a smaller lie than an impossible one.
     pub fn refresh_fan(&mut self, device: &device::Device) {
-        if let Ok(sample) = get_fan_rpm(device) {
-            if let Some(accepted) = self.fan_filter.accept(sample) {
-                self.fan_actual = Some(accepted);
+        let now = std::time::Instant::now();
+        if self.fan_reads_paused_until.is_some_and(|until| now < until) {
+            return;
+        }
+        match get_fan_rpm(device) {
+            Ok(sample) => {
+                self.fan_reads_paused_until = None;
+                if let Some(accepted) = self.fan_filter.accept(sample) {
+                    self.fan_actual = Some(accepted);
+                }
+            }
+            Err(e) => {
+                log::warn!("fan RPM read failed, pausing fan reads for {FAN_READ_PAUSE:?}: {e:#}");
+                self.fan_reads_paused_until = Some(now + FAN_READ_PAUSE);
             }
         }
     }

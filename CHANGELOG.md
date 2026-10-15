@@ -71,7 +71,9 @@ Windows 11, and nowhere else.
   JSON as before. Other errors still fail the command.
 - **A response that doesn't match says how.** "Response does not match the report" now adds the
   sent and received header (status, command, id, remaining packets, size). On #2's Blade 15 2018,
-  `0x0d88` (fan RPM) fails this way and the error didn't say which field differed.
+  `0x0d88` (fan RPM) fails this way and the error didn't say which field differed. A failed fan
+  RPM read in the tray now pauses fan reads for 60 s: each one retried for about 4 s on the UI
+  thread, so hovering froze the tray on that laptop.
 - **`razer-cli auto fan rpm` checks the laptop's own fan range.** It accepted 2000 to 5600 RPM, the
   range across every known Blade. Outside a laptop's own range the EC runs at its floor or ceiling
   and still reports success, so values outside `fan_rpm_range` (printed by `info`) are now

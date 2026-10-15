@@ -77,7 +77,8 @@ Windows 11, and nowhere else.
 - **`razer-cli auto fan rpm` checks the laptop's own fan range.** It accepted 2000 to 5600 RPM, the
   range across every known Blade. Outside a laptop's own range the EC runs at its floor or ceiling
   and still reports success, so values outside `fan_rpm_range` (printed by `info`) are now
-  rejected with the speed the fan would really run at.
+  rejected with the speed the fan would really run at. On `0x029F`, set points of 5300, 5500 and
+  5700 all ran at 5000/4900 RPM (2026-10-15).
 
 ## 0.9.5: keyboard colors, a clearer menu, and a tray that can't die at login or lose its config
 Built and tested on `0x029F` (2026-09-23). Probes that set the scope, same machine: `0x070f` is Max

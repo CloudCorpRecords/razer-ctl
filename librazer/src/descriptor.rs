@@ -42,6 +42,9 @@ pub struct Descriptor {
 ///   projects treat 0 as "clear the manual flag"; do not port that here.
 /// - The EC slews manual targets at a measured ~23 RPM/s and the tach is quantized to
 ///   100 RPM, so a set must not be verified by reading back sooner than dRPM/23 seconds.
+/// - The ceiling clamps the same way. Measured 2026-10-15, Balanced, idle: set points
+///   5300 / 5500 / 5700 all settle at 5000/4900 RPM while `0x0d81` reads back the value
+///   written. So: honored up to 5000, silently clamped above.
 /// - Razer documents no minimum for any model, and every other open-source project picks
 ///   a different unjustified one (3500 "for ALL laptops", 3100, per-model 2200). There is
 ///   no authority to defer to here; only measurement.
@@ -62,7 +65,7 @@ pub const SUPPORTED: &[Descriptor] = &[
             // changes the F-row (F1-F12 primary, media on Fn; key-tested 2026-09-23).
         ],
         init_cmds: &[],
-        fan_rpm_range: (2000, 5000), // MEASURED 2026-08-15, not transcribed
+        fan_rpm_range: (2000, 5000), // MEASURED (floor 2026-08-15, ceiling 2026-10-15)
     },
     Descriptor {
         model_number_prefix: "RZ09-0482X",
@@ -93,7 +96,7 @@ pub const SUPPORTED: &[Descriptor] = &[
             "perf",
         ],
         init_cmds: &[],
-        fan_rpm_range: (2000, 5000), // MEASURED 2026-08-15, not transcribed
+        fan_rpm_range: (2000, 5000), // MEASURED (floor 2026-08-15, ceiling 2026-10-15)
     },
     Descriptor {
         model_number_prefix: "RZ09-0510S",

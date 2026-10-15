@@ -714,13 +714,17 @@ fn real_main() -> Result<()> {
             handle(device, submatches, &cli_features)?;
         }
         Some(("manual", submatches)) => {
+            let pid = *submatches.get_one::<u16>("pid").unwrap();
             let device = device::Device::new(librazer::descriptor::Descriptor {
                 model_number_prefix: "Unknown",
                 name: "Unknown",
-                pid: *submatches.get_one::<u16>("pid").unwrap(),
+                pid,
                 features: feature::ALL_FEATURES,
                 init_cmds: &[],
-                fan_rpm_range: (2200, 5000), // unknown chassis: same default as matching.rs
+                // Same bounds the generic auto profile would use for this PID: the
+                // chassis's own range when the table knows it, else the flat default.
+                fan_rpm_range: librazer::descriptor::fan_range_for_pid(pid)
+                    .unwrap_or(librazer::matching::FALLBACK_FAN_RPM_RANGE),
             })?;
             handle(&device, submatches, &cli_features)?;
         }

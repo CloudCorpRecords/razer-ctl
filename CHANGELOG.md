@@ -13,11 +13,13 @@ Windows 11, and nowhere else.
   3200/3300 whatever the set point; that is still open. Not tested here.
 
 **Reliability**
-- **Fans.** A manual fan whose zone 2 set point differs from zone 1's now counts as drift, so it
-  is put back wherever other drift is ("Undo changes made by Synapse", and the startup, resync
-  and wake checks). The tray read zone 1 only, so another tool's zone 2 write, or a two-zone
-  write cut off between the zones, went unseen. One more read per check in Manual. From
-  upstream blauzim/razer-ctl `435c870`. Not tested on hardware.
+- **Fans.** A manual fan whose zone 2 set point is off target now counts as drift, so it is put
+  back wherever other drift is ("Undo changes made by Synapse", and the startup, resync and wake
+  checks). The tray read zone 1 only, so another tool's zone 2 write, or a two-zone write cut off
+  between the zones, went unseen. One more read per check in Manual. After 3 repairs in a row
+  that don't hold, the tray stops checking zone 2 until it restarts and says so in the log, so a
+  chassis that reports zone 2 differently can't trigger a rewrite on every check. From upstream
+  blauzim/razer-ctl `435c870`. Not tested on hardware.
 
 ## 0.9.5: keyboard colors, a clearer menu, and a tray that can't die at login or lose its config
 Built and tested on `0x029F` (2026-09-23). Probes that set the scope, same machine: `0x070f` is Max

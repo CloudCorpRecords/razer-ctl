@@ -90,6 +90,8 @@ fn log_tooltip_transition(tooltip: &str) {
 pub struct ProgramState {
     pub device_state: DeviceState,
     pub observed: DeviceState,
+    /// Turns off the zone 2 fan drift check if repairing it stops working.
+    pub zone2_guard: librazer::state::Zone2DriftGuard,
     pub ac_state: DeviceState,
     pub battery_state: DeviceState,
     pub event_handlers: HashMap<String, DeviceState>,
@@ -174,6 +176,7 @@ impl ProgramState {
         Ok(Self {
             device_state,
             observed: device_state,
+            zone2_guard: Default::default(),
             ac_state,
             battery_state,
             event_handlers,
@@ -769,7 +772,7 @@ impl ProgramState {
         let drift = match DeviceState::read(device) {
             Ok(observed) => {
                 self.observed = observed;
-                observed.drifted_from(&self.device_state, device)
+                observed.drifted_from(&self.device_state, device, &mut self.zone2_guard)
             }
             Err(e)
                 if e.downcast_ref::<librazer::error::PerfZonesDiverged>()

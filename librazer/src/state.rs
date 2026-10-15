@@ -612,21 +612,35 @@ impl DeviceState {
     }
 
     /// [`Self::enforced_fields_differ`], for a state just read from `device`, plus what
-    /// [`Self::read`] cannot see: in Manual, zone 2's set point apart from zone 1's (see
+    /// [`Self::read`] cannot see: in Manual, a zone 2 set point off target (see
     /// [`command::fan_setpoint_zones_differ`]). Costs one extra read in Manual when the
     /// enforced fields match, none otherwise. A failed zone 2 read is not drift: like every
-    /// other failed poll, it leaves the last decision standing.
-    pub fn drifted_from(&self, intended: &DeviceState, device: &impl HidTransport) -> bool {
+    /// other failed poll, it leaves the last decision standing. `guard` stops the zone 2
+    /// check after repairs stop working (see [`Zone2DriftGuard`]).
+    pub fn drifted_from(
+        &self,
+        intended: &DeviceState,
+        device: &impl HidTransport,
+        guard: &mut Zone2DriftGuard,
+    ) -> bool {
         if self.enforced_fields_differ(intended) {
             return true;
         }
         match self.fan_speed {
-            FanSpeed::Manual(rpm) => command::fan_setpoint_zones_differ(device, rpm)
-                .unwrap_or_else(|e| {
-                    log::debug!("zone 2 fan set point read failed: {e:?}");
-                    false
-                }),
-            FanSpeed::Auto => false,
+            FanSpeed::Manual(rpm) if !guard.given_up => {
+                match command::fan_setpoint_zones_differ(device, rpm) {
+                    Ok(true) => guard.drift_seen(),
+                    Ok(false) => {
+                        guard.unrepaired = 0;
+                        false
+                    }
+                    Err(e) => {
+                        log::debug!("zone 2 fan set point read failed: {e:?}");
+                        false
+                    }
+                }
+            }
+            _ => false,
         }
     }
 
@@ -1071,6 +1085,42 @@ pub fn sample_fan_rpm(device: &impl HidTransport, max_reads: usize) -> Result<(F
         }
     }
     Ok((last, false))
+}
+
+/// Stops counting a zone 2 fan set point as drift once repairing it stops working.
+///
+/// Nobody has measured how zone 2's set point reads back on any chassis. If one reports it
+/// differently from what was written, every check would see drift and every repair would
+/// rewrite the whole enforced profile, forever. So after [`ZONE2_MAX_REPAIRS`] detections in a
+/// row with no agreeing read between them, the zone 2 check is off until the tray restarts,
+/// with one warning in the log. Drift in any other field is unaffected.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Zone2DriftGuard {
+    unrepaired: u8,
+    given_up: bool,
+}
+
+/// Zone 2 repairs in a row that may fail before [`Zone2DriftGuard`] stops checking.
+pub const ZONE2_MAX_REPAIRS: u8 = 3;
+
+impl Zone2DriftGuard {
+    /// Record one zone 2 drift detection; returns whether to treat it as drift.
+    fn drift_seen(&mut self) -> bool {
+        if self.unrepaired >= ZONE2_MAX_REPAIRS {
+            self.given_up = true;
+            log::warn!(
+                "zone 2 fan set point still off target after {ZONE2_MAX_REPAIRS} repairs; \
+                 no longer checking zone 2 until the tray restarts"
+            );
+            return false;
+        }
+        self.unrepaired += 1;
+        true
+    }
+
+    pub fn given_up(&self) -> bool {
+        self.given_up
+    }
 }
 
 #[cfg(test)]
@@ -1764,17 +1814,48 @@ mod tests {
         });
         let s = dstate(PerfMode::Silent, FanSpeed::Manual(3000), 0);
         assert!(!s.enforced_fields_differ(&s));
-        assert!(s.drifted_from(&s, &mock));
+        assert!(s.drifted_from(&s, &mock, &mut Zone2DriftGuard::default()));
     }
 
     #[test]
     fn drifted_from_reads_nothing_more_outside_manual_or_on_known_drift() {
         let mock = MockTransport::echo();
         let auto = dstate(PerfMode::Silent, FanSpeed::Auto, 0);
-        assert!(!auto.drifted_from(&auto, &mock));
+        assert!(!auto.drifted_from(&auto, &mock, &mut Zone2DriftGuard::default()));
         let manual = dstate(PerfMode::Silent, FanSpeed::Manual(3000), 0);
-        assert!(manual.drifted_from(&auto, &mock));
+        assert!(manual.drifted_from(&auto, &mock, &mut Zone2DriftGuard::default()));
         assert_eq!(mock.sent_count(), 0);
+    }
+
+    #[test]
+    fn zone_2_check_stops_after_repairs_fail_and_resumes_counting_after_agreement() {
+        let off = MockTransport::with_responder(|req| {
+            let zone = req.get_args()[1];
+            reply(&[0, zone, if zone == 1 { 30 } else { 40 }])
+        });
+        let s = dstate(PerfMode::Silent, FanSpeed::Manual(3000), 0);
+        let mut guard = Zone2DriftGuard::default();
+        for _ in 0..ZONE2_MAX_REPAIRS {
+            assert!(s.drifted_from(&s, &off, &mut guard));
+        }
+        assert!(
+            !s.drifted_from(&s, &off, &mut guard),
+            "gives up after the cap"
+        );
+        assert!(guard.given_up());
+        let before = off.sent_count();
+        assert!(!s.drifted_from(&s, &off, &mut guard));
+        assert_eq!(off.sent_count(), before, "no zone 2 reads once given up");
+
+        // An agreeing read in between resets the count.
+        let ok = MockTransport::with_responder(|req| reply(&[0, req.get_args()[1], 30]));
+        let mut guard = Zone2DriftGuard::default();
+        for _ in 0..ZONE2_MAX_REPAIRS {
+            assert!(s.drifted_from(&s, &off, &mut guard));
+        }
+        assert!(!s.drifted_from(&s, &ok, &mut guard));
+        assert!(s.drifted_from(&s, &off, &mut guard));
+        assert!(!guard.given_up());
     }
 
     #[test]
@@ -1782,7 +1863,7 @@ mod tests {
         // The set-point getter demands the zone echoed back; a wrong one is a failed read.
         let mock = MockTransport::with_responder(|_| reply(&[0, 9, 40]));
         let s = dstate(PerfMode::Silent, FanSpeed::Manual(3000), 0);
-        assert!(!s.drifted_from(&s, &mock));
+        assert!(!s.drifted_from(&s, &mock, &mut Zone2DriftGuard::default()));
     }
 
     #[test]

@@ -186,8 +186,8 @@ pub fn get_fan_rpm(device: &impl HidTransport, fan_zone: FanZone) -> Result<u16>
     Ok(response.get_args()[2] as u16 * 100)
 }
 
-/// Whether zone 2's manual set point differs from zone 1's, given zone 1's value from a
-/// read just made (`DeviceState::read` reports only zone 1).
+/// Whether the manual set points have left `intended_rpm`, given that a zone 1 read just
+/// made matched it (`DeviceState::read` reports only zone 1).
 ///
 /// Every write here sets both zones to the same value, so a difference means something
 /// else wrote one zone (another tool), or a two-zone write was cut off between the zones
@@ -196,20 +196,25 @@ pub fn get_fan_rpm(device: &impl HidTransport, fan_zone: FanZone) -> Result<u16>
 ///
 /// A difference is re-read once, both zones, before it is believed: another process's
 /// two-zone write can land between our reads, as with the perf zones in `get_perf_mode`.
+/// The re-read is compared with `intended_rpm`, not only zone against zone, so a write
+/// that moved both zones together between our reads is drift too.
 /// Costs one extra read when the zones agree. Returns a bool rather than a typed error on
 /// purpose: unlike the perf zones, divergence here is treated as drift (repaired only
 /// where the caller already writes), because zone 2's set-point read-back has not been
 /// measured on any chassis yet.
-pub fn fan_setpoint_zones_differ(device: &impl HidTransport, zone1_rpm: u16) -> Result<bool> {
-    if get_fan_rpm(device, FanZone::Zone2)? == zone1_rpm {
+pub fn fan_setpoint_zones_differ(device: &impl HidTransport, intended_rpm: u16) -> Result<bool> {
+    if get_fan_rpm(device, FanZone::Zone2)? == intended_rpm {
         return Ok(false);
     }
     let zone1 = get_fan_rpm(device, FanZone::Zone1)?;
     let zone2 = get_fan_rpm(device, FanZone::Zone2)?;
-    if zone1 != zone2 {
-        log::warn!("fan set points disagree: zone 1 = {zone1} RPM, zone 2 = {zone2} RPM");
+    let drifted = zone1 != intended_rpm || zone2 != intended_rpm;
+    if drifted {
+        log::warn!(
+            "fan set points off target {intended_rpm} RPM: zone 1 = {zone1} RPM, zone 2 = {zone2} RPM"
+        );
     }
-    Ok(zone1 != zone2)
+    Ok(drifted)
 }
 
 pub fn get_fan_actual_rpm(device: &impl HidTransport, fan_zone: FanZone) -> Result<u16> {
@@ -746,12 +751,24 @@ mod tests {
     }
 
     #[test]
-    fn fan_setpoint_zones_racing_a_write_are_not_reported() {
+    fn fan_setpoint_zones_moved_together_off_target_are_reported() {
         // Another process moves both zones from 3000 to 4000 between the caller's zone 1
-        // read and our zone 2 read; the re-read sees both at 4000.
+        // read and our zone 2 read; the re-read sees both at 4000, which is not the
+        // intended 3000.
         let mock = MockTransport::with_responder(|req| reply(&[0, req.get_args()[1], 40]));
-        assert!(!fan_setpoint_zones_differ(&mock, 3000).unwrap());
+        assert!(fan_setpoint_zones_differ(&mock, 3000).unwrap());
         assert_eq!(mock.sent_count(), 3);
+    }
+
+    #[test]
+    fn fan_setpoint_zones_back_on_target_after_a_race_are_not_reported() {
+        // Zone 2 reads 4000 once (a write in flight), then both zones settle at 3000.
+        let n = std::cell::Cell::new(0);
+        let mock = MockTransport::with_responder(move |req| {
+            n.set(n.get() + 1);
+            reply(&[0, req.get_args()[1], if n.get() == 1 { 40 } else { 30 }])
+        });
+        assert!(!fan_setpoint_zones_differ(&mock, 3000).unwrap());
     }
 
     #[test]

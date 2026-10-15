@@ -24,6 +24,11 @@ pub struct MenuOptions<'a> {
     pub fan_rpm_range: (u16, u16),
     /// Shown as a disabled item at the top (e.g. Synapse is running).
     pub warning: Option<&'a str>,
+    /// Why the tray is not applying its config (a file that doesn't parse or can't be read),
+    /// shown like `warning`. Separate from it, so the Synapse check can't clear it.
+    pub config_problem: Option<&'a str>,
+    /// Offer "Reset settings to defaults": only while the config doesn't parse.
+    pub offer_reset: bool,
     /// Drives the "Match Windows power to Razer performance mode" toggle.
     pub match_power_mode: bool,
     /// The Windows power mode now in effect, shown under that toggle while it is on.
@@ -54,6 +59,8 @@ pub fn build(
         enforce,
         fan_rpm_range,
         warning,
+        config_problem,
+        offer_reset,
         match_power_mode,
         windows_power_mode,
         refresh_rates,
@@ -69,6 +76,19 @@ pub fn build(
     // label, not an action: the tray never stops another program's services.
     if let Some(text) = warning {
         menu.append(&MenuItem::new(format!("⚠ {text}"), false, None))?;
+    }
+    if let Some(text) = config_problem {
+        menu.append(&MenuItem::new(format!("⚠ {text}"), false, None))?;
+    }
+    // The way out of a config that doesn't parse, other than fixing it by hand. Offered only
+    // then: anywhere else a one-click wipe of every setting is a trap.
+    if offer_reset {
+        menu.append(&MenuItem::with_id(
+            "reset_config",
+            "Reset settings to defaults",
+            true,
+            None,
+        ))?;
     }
     // Which saved profile the picks below go to. The tray keeps one for plugged in and one
     // for battery and switches between them by itself, which the menu never used to say.

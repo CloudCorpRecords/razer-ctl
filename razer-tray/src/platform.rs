@@ -27,30 +27,32 @@ use windows::Win32::System::Threading::{
     PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
 };
 
-/// Whether the machine is on AC. `previous` is returned when Windows cannot say.
+/// Whether the machine is on AC: `Some(true)` AC, `Some(false)` battery, `None` when Windows
+/// cannot say.
 ///
 /// `ACLineStatus` is 0 (battery), 1 (AC) or 255 (unknown). Unknown, and a failed call, used
 /// to count as AC, which could put an AC performance profile on a machine running on
-/// battery. Keeping the last known answer is the only choice that can't flip the profile
-/// on a non-answer.
+/// battery. The caller keeps its last known answer instead, the only choice that can't flip
+/// the profile on a non-answer, and a profile still waiting for its first reading is not
+/// read on a guess at all (`librazer::observe::mode`).
 #[cfg(target_os = "windows")]
-pub fn get_power_state(previous: bool) -> bool {
+pub fn power_source() -> Option<bool> {
     // SAFETY: `status` is a fully-default-initialized SYSTEM_POWER_STATUS; we pass a
     // valid &mut to it and GetSystemPowerStatus only writes through that pointer.
     unsafe {
         let mut status = SYSTEM_POWER_STATUS::default();
         match GetSystemPowerStatus(&mut status) {
             Ok(()) => match status.ACLineStatus {
-                0 => false,
-                1 => true,
+                0 => Some(false),
+                1 => Some(true),
                 other => {
-                    log::debug!("ACLineStatus {other} (unknown); keeping {previous}");
-                    previous
+                    log::debug!("ACLineStatus {other} (unknown)");
+                    None
                 }
             },
             Err(e) => {
                 log::warn!("Failed to get power status: {:?}", e);
-                previous
+                None
             }
         }
     }
@@ -82,8 +84,8 @@ pub fn battery_level() -> Option<librazer::keyboard::BatteryLevel> {
 }
 
 #[cfg(target_os = "linux")]
-pub fn get_power_state(previous: bool) -> bool {
-    linux_power_state().unwrap_or(previous)
+pub fn power_source() -> Option<bool> {
+    linux_power_state().ok()
 }
 
 #[cfg(target_os = "linux")]

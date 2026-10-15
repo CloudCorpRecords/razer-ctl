@@ -8,6 +8,7 @@ mod state;
 
 use anyhow::Result;
 
+use librazer::observe;
 use librazer::types::LightsAlwaysOn;
 use librazer::{command, device};
 
@@ -200,8 +201,9 @@ fn main() -> Result<()> {
     let mut config = config_file.load();
     // A file that exists but can't be read yet (an editor or antivirus holding it at
     // login) must not be replaced by defaults on the device either: wait a little for it.
+    // One that was read and doesn't parse won't parse in a second either.
     for _ in 0..10 {
-        if !config_file.is_blocked() {
+        if !config_file.is_blocked() || config_file.corrupt().is_some() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
@@ -216,12 +218,33 @@ fn main() -> Result<()> {
         platform::spawn_display_state_monitor();
     }
 
+    // A config that doesn't parse is not applied, so the laptop keeps whatever it had. Say
+    // so where it's seen: the menu says it too, but nobody opens the menu to find out that
+    // nothing is wrong. Off the main thread, so the tray comes up behind the dialog.
+    if let Some(error) = config_file.corrupt() {
+        let text = format!(
+            "razer-tray's settings file has an error, so it was not loaded:\n{}\n\n{error}\n\nA \
+             copy was kept beside it. Until the file is fixed, or you pick \"Reset settings to \
+             defaults\" in the tray menu, razer-tray will not change the laptop's settings by \
+             itself.",
+            config_file.path().display()
+        );
+        std::thread::spawn(move || {
+            let _ = native_dialog::MessageDialog::new()
+                .set_type(native_dialog::MessageType::Warning)
+                .set_title("razer-tray")
+                .set_text(&text)
+                .show_alert();
+        });
+    }
+
     let mut state = ProgramState::new(
         config,
         config_file,
-        platform::get_power_state(true),
+        platform::power_source(),
         device.info().fan_rpm_range, // per-chassis fan bounds, from the descriptor
     )?;
+    log::info!("config mode at startup: {:?}", state.mode());
     state.warning = platform::detect_synapse();
     state.refresh_rates = platform::refresh_rates();
     state.custom_colors = librazer::keyboard::supports_custom_frame(device.info().pid);
@@ -329,6 +352,14 @@ fn main() -> Result<()> {
                 if event.id == MenuId("dgpu_terminate_proc".to_string()) {
                     log::info!("match event id");
                     platform::gpu_taskkill()?;
+                } else if event.id == MenuId("reset_config".to_string()) {
+                    state.reset_config(Some(&tray_icon));
+                    // The profiles are unset now: take the next reading through the resync
+                    // probe, which adopts it and writes nothing.
+                    if !state.needs_sync {
+                        state.needs_sync = true;
+                        next_sync_at = now;
+                    }
                 } else if event.id == MenuId("toggle_enforce".to_string()) {
                     state.enforce = !state.enforce;
                     if let Err(e) = state.persist() {
@@ -421,7 +452,7 @@ fn main() -> Result<()> {
             {
                 last_hover_refresh = now;
                 if let Ok(observed) = DeviceState::read(&device) {
-                    state.observed = observed;
+                    state.observe(observed, Some(&tray_icon));
                 }
                 state.refresh_fan(&device);
                 state.refresh_ui(&tray_icon);
@@ -429,9 +460,16 @@ fn main() -> Result<()> {
 
             // Power source. An Action session moves its picks to the new source's profile;
             // an app scan is forced so a rule restricted to the other source retires now
-            // rather than up to 5 s later.
-            let ac_now = platform::get_power_state(state.ac_power);
-            if ac_now != state.ac_power {
+            // rather than up to 5 s later. When Windows can't say, the last known source
+            // stands (AC before the first answer).
+            let polled = platform::power_source();
+            let became_known = polled.is_some() && !state.power_known;
+            if became_known {
+                state.power_known = true;
+            }
+            let ac_now = polled.unwrap_or(state.ac_power);
+            let source_changed = ac_now != state.ac_power;
+            if source_changed {
                 log::info!("power source: {}", if ac_now { "AC" } else { "battery" });
                 let (old_base, new_base) = if ac_now {
                     (state.battery_state, state.ac_state)
@@ -449,8 +487,20 @@ fn main() -> Result<()> {
                 last_app_scan_timestamp = now - std::time::Duration::from_secs(10);
                 // Windows keeps the power-mode slider per power source, so the new source's
                 // slider needs setting (or putting back) even when the perf mode doesn't
-                // change.
-                state.sync_windows_power_mode(state.target().perf_mode);
+                // change. Not from a profile that isn't applied: an adoption sets it.
+                if state.mode().writes_config() {
+                    state.sync_windows_power_mode(state.target().perf_mode);
+                }
+            }
+            // First seen on a source whose profile was never set (or the source just became
+            // known): read it now through the resync probe, which adopts the reading and
+            // writes nothing, and retries with the usual backoff if the read fails.
+            if (source_changed || became_known)
+                && matches!(state.mode(), observe::Mode::Adopt { .. })
+                && !state.needs_sync
+            {
+                state.needs_sync = true;
+                next_sync_at = now;
             }
 
             // Hand edits to the config take effect without a restart (Action rules can
@@ -530,9 +580,10 @@ fn main() -> Result<()> {
 
             // Converge the device on what it should be now: the Action session, else the
             // saved profile for the power source. Transient, because neither needs saving.
-            // Not while the config is unread: the target would be defaults.
+            // Only while the config is applied: otherwise the target is defaults (a file
+            // that doesn't parse or can't be read) or a placeholder (a profile not yet read).
             let target = state.target();
-            if io_ok && !state.config_unread() && target != state.device_state {
+            if io_ok && state.mode().writes_config() && target != state.device_state {
                 log::info!("new_device_state 3 {:?}", target);
                 state.update_transient(&mut tray_icon, target, &device)?;
             }
@@ -644,7 +695,10 @@ fn main() -> Result<()> {
                 state.paint_keyboard(&device, false);
                 match DeviceState::read(&device) {
                     Ok(observed) => {
-                        state.observed = observed;
+                        // Whether the config was applied before this reading, which may adopt
+                        // a profile: a reading that adopts must not be written back.
+                        let applying = state.mode().writes_config();
+                        state.observe(observed, Some(&tray_icon));
 
                         // Adopt an externally-made keyboard-brightness change (e.g. the
                         // hardware Fn brightness keys) into the app's own state. We also
@@ -654,9 +708,14 @@ fn main() -> Result<()> {
                         // == the target and does NOT re-apply -- no tug-of-war.
                         // Adopt a pending hand edit first, so the save below neither
                         // writes over it nor gets discarded by it.
+                        // While the config isn't applied, `observe` already made the intent
+                        // follow the device, brightness included, and no profile takes it.
                         state.reload_config_if_changed(&tray_icon);
                         let observed_brightness = state.observed.lights_mode.keyboard_brightness;
-                        if observed_brightness != state.device_state.lights_mode.keyboard_brightness
+                        if applying
+                            && state.mode().writes_config()
+                            && observed_brightness
+                                != state.device_state.lights_mode.keyboard_brightness
                         {
                             state.device_state.lights_mode.keyboard_brightness =
                                 observed_brightness;
@@ -686,6 +745,8 @@ fn main() -> Result<()> {
                         // whenever you're active (incl. right after you return to the
                         // machine); the wake reconcile covers the wake case.
                         if state.enforce
+                            && applying
+                            && state.mode().writes_config()
                             && state.observed.drifted_from(
                                 &state.device_state,
                                 &device,

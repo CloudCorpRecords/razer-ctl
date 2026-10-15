@@ -36,7 +36,10 @@ has the release history and the measurements behind it.
 - **Logo lighting**: off, static or breathing.
 - **Charge limit**: 50–100% (100 = off).
 - **Plugged-in and battery profiles**: each keeps its own settings and switches when you plug or
-  unplug. The top of the menu says which one your changes go to.
+  unplug. The top of the menu says which one your changes go to. On first run neither is set: the
+  tray reads the laptop's current settings into the profile for the power source it is on, and
+  writes nothing. The other profile is read the first time the laptop runs on that source. While
+  Windows can't say which source it is, nothing is read into a profile.
 - **Screen refresh rate** per profile, from the rates the display offers at its current resolution.
   "Leave as Windows has it" is the default.
 - **Match Windows power to Razer performance mode** (off by default, in Performance mode): sets the
@@ -159,10 +162,14 @@ Release binaries are built by GitHub Actions from a tag, never uploaded from a p
   nvidia-smi can't name, so a few dGPU users may survive.
 - **Device-loss recovery isn't runtime-tested.** The control interface is part of the internal
   keyboard's USB composite device, which Windows won't disable, so the backoff is only code-reviewed.
-- **A config that doesn't parse is kept.** At startup the tray logs the error and saves a timestamped
-  copy (`default-config.toml.invalid-<unix time>`). A bad hand edit made while it runs is left alone
-  and nothing is saved over it until it's fixed. Saves are atomic (temp file, then rename). Comments
-  in the file are lost when the tray saves.
+- **A config that doesn't parse is kept, and not applied.** At startup the tray logs the error, saves a
+  timestamped copy (`default-config.toml.invalid-<unix time>`), and says so in a dialog and at the
+  top of the menu. Until the file parses again or you pick **Reset settings to defaults** (offered
+  only then), it changes nothing on the laptop by itself and saves nothing over the file. Your own
+  menu picks still apply. A reset starts over as a first run: the profiles are read from the laptop,
+  not set to defaults. A file that can't be read (locked) is waited for the same way. A bad hand edit
+  made while it runs is left alone and nothing is saved over it until it's fixed. Saves are atomic
+  (temp file, then rename). Comments in the file are lost when the tray saves.
 - **`battery-care get` can be stale right after a `set`** (~1–2 s firmware lag). Read it again.
 - **The tooltip holds 63 characters, not 128.** `tray-icon` 0.19 leaves `cbSize` at 0, and the shell
   falls back to the original 64-unit layout. Each tooltip field has a priority, and the least

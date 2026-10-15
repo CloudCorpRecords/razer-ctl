@@ -12,6 +12,8 @@ use librazer::keyboard::{Frame, KeyboardPreset};
 use librazer::types::BatteryCare;
 use tray_icon::menu::Menu;
 
+use librazer::observe::{self, ConfigHealth, Mode, Reading, Unset};
+
 use crate::config::{ConfigFile, DiskState};
 use crate::menu;
 use crate::state::{
@@ -104,6 +106,13 @@ pub struct ProgramState {
     /// zone -- so nothing may write `fan_actual` except [`Self::refresh_fan`].
     fan_filter: FanRpmFilter,
     pub ac_power: bool,
+    /// Windows has said which power source this is at least once. Until then `ac_power` is
+    /// a guess (AC), which a config with every profile set acts on as it always has, and a
+    /// profile still waiting for its first reading never does (see [`Self::mode`]).
+    pub power_known: bool,
+    /// Profiles never set: a new config's. Each is read from the laptop the first time the
+    /// tray sees that power source, and never applied before.
+    pub unset: Unset,
     pub enforce: bool,
     /// Re-assert the intended profile on wake even when `enforce` is off (config-driven).
     pub reassert_on_resume: bool,
@@ -149,12 +158,14 @@ pub struct ProgramState {
 impl ProgramState {
     /// Build the tray's state from the config. No device I/O, so it cannot fail on a
     /// device that isn't ready yet; [`Self::sync`] is the part that talks to the EC.
+    /// `power` is `None` when Windows can't say; AC is then assumed, as before.
     pub fn new(
         config: ConfigState,
         config_file: ConfigFile,
-        ac_power: bool,
+        power: Option<bool>,
         fan_rpm_range: (u16, u16),
     ) -> Result<Self> {
+        let ac_power = power.unwrap_or(true);
         let ac_state = config.ac_state.normalized(fan_rpm_range);
         let battery_state = config.battery_state.normalized(fan_rpm_range);
         let device_state = if ac_power { ac_state } else { battery_state };
@@ -164,6 +175,8 @@ impl ProgramState {
                 enforce: config.enforce,
                 fan_rpm_range,
                 warning: None,
+                config_problem: None,
+                offer_reset: false,
                 match_power_mode: config.match_windows_power_mode,
                 windows_power_mode: None,
                 refresh_rates: &[],
@@ -184,6 +197,8 @@ impl ProgramState {
             fan_actual: None,
             fan_filter: FanRpmFilter::default(),
             ac_power,
+            power_known: power.is_some(),
+            unset: config.unset(),
             enforce: config.enforce,
             reassert_on_resume: config.reassert_on_resume,
             app_profiles: config.app_profiles,
@@ -209,6 +224,8 @@ impl ProgramState {
             enforce: self.enforce,
             fan_rpm_range: self.fan_rpm_range,
             warning: self.warning.as_deref(),
+            config_problem: self.config_problem(),
+            offer_reset: self.config_file.health() == ConfigHealth::Corrupt,
             match_power_mode: self.match_power_mode,
             windows_power_mode: if self.match_power_mode {
                 crate::platform::windows_power_mode()
@@ -248,6 +265,97 @@ impl ProgramState {
         }
     }
 
+    /// Whether the config may be applied now, or the tray only reads the device (and
+    /// adopts what it reads into a profile that was never set). Every path that writes
+    /// something the user did not just pick asks this first: convergence, Enforce, the
+    /// startup and resync apply, wake re-asserts and zone repairs (via [`Self::reconcile`]).
+    pub fn mode(&self) -> Mode {
+        observe::mode(
+            self.config_file.health(),
+            self.power_known.then_some(self.ac_power),
+            self.unset,
+        )
+    }
+
+    /// The menu line for a config the tray is not applying.
+    fn config_problem(&self) -> Option<&'static str> {
+        match self.config_file.health() {
+            ConfigHealth::Corrupt => Some("The settings file has an error: not applying it"),
+            ConfigHealth::Unreadable => Some("The settings file can't be read: not applying it"),
+            ConfigHealth::Usable => None,
+        }
+    }
+
+    /// Take in a successful device reading. Every read of the whole state goes through
+    /// here (Mirror, hover, reconcile, resync probe), so a profile waiting for its first
+    /// reading gets the first one taken on its power source, and while the config is not
+    /// applied the intent tracks the device.
+    ///
+    /// Adopting writes nothing to the device: the reading already is the device's state
+    /// (`DeviceState::read` forbids writing one back).
+    pub fn observe(&mut self, observed: DeviceState, tray_icon: Option<&tray_icon::TrayIcon>) {
+        self.observed = observed;
+        let reading = observe::on_reading(
+            self.mode(),
+            &self.device_state,
+            &observed,
+            self.fan_rpm_range,
+        );
+        match reading {
+            Reading::Display => {}
+            Reading::Follow(intent) => {
+                if intent != self.device_state {
+                    self.device_state = intent;
+                    self.rebuild_menu(tray_icon);
+                }
+            }
+            Reading::Adopt { ac_power, profile } => {
+                let placeholder = if ac_power {
+                    std::mem::replace(&mut self.ac_state, profile)
+                } else {
+                    std::mem::replace(&mut self.battery_state, profile)
+                };
+                self.unset.clear(ac_power);
+                log::info!(
+                    "adopted the laptop's current settings as the {} profile (nothing written): \
+                     {profile:?}",
+                    if ac_power { "plugged-in" } else { "battery" }
+                );
+                // An Action running meanwhile was seeded from the placeholder; move it, and
+                // any pick made during it, onto the adopted profile.
+                if let Some(session) = &mut self.action {
+                    if let Some(rule) = self.app_profiles.get(session.rule) {
+                        session.power_changed(rule, &placeholder, &profile, self.fan_rpm_range);
+                    }
+                }
+                // What the device has. A running Action differs from it, and convergence
+                // applies the Action as it would on any other profile.
+                self.device_state = profile;
+                if let Err(e) = self.persist() {
+                    log::warn!("could not save the adopted profile: {e:?}");
+                }
+                // Windows-side only (the power-mode slider, when matching is on).
+                self.sync_windows_power_mode(self.device_state.perf_mode);
+                self.rebuild_menu(tray_icon);
+            }
+        }
+    }
+
+    /// The user picked "Reset settings to defaults" while the config doesn't parse. The
+    /// file becomes a new install's, profiles unset, so the next reading adopts the
+    /// laptop's settings instead of pushing defaults onto it. The broken file's
+    /// timestamped copy stays beside it.
+    pub fn reset_config(&mut self, tray_icon: Option<&tray_icon::TrayIcon>) {
+        let fresh = ConfigState::first_run();
+        match self.config_file.reset(&fresh) {
+            Ok(()) => {
+                self.adopt_config(fresh);
+                self.rebuild_menu(tray_icon);
+            }
+            Err(e) => log::warn!("could not reset the settings: {e:?}"),
+        }
+    }
+
     /// What the device should be in right now: the running Action's session state when
     /// one is active and allowed on this power source, else the saved profile.
     pub fn target(&self) -> DeviceState {
@@ -276,10 +384,11 @@ impl ProgramState {
         tray_icon: &mut tray_icon::TrayIcon,
         device: &device::Device,
     ) -> Result<()> {
-        // The config on disk exists but couldn't be read (still locked after the startup
-        // wait): the intent in memory is only defaults, so probe instead of writing them over
-        // the user's settings. The periodic reload adopts the file once it can be read.
-        if !self.sync_apply || self.config_unread() {
+        // The config isn't to be applied (it doesn't parse, can't be read yet, or a profile
+        // waits for its first reading): probe instead of writing what's in memory, which is
+        // only defaults or a placeholder. The probe's reading is adopted where it should be.
+        let mode = self.mode();
+        if !self.sync_apply || !mode.writes_config() {
             // After a failed READ: probe. A successful read ends the resync; the device is
             // written only if Enforce says so, exactly as on any other read.
             let probe = DeviceState::read(device);
@@ -288,14 +397,19 @@ impl ProgramState {
             // would otherwise keep the probe failing forever without ever writing.
             let diverged = matches!(&probe, Err(e)
                 if e.downcast_ref::<librazer::error::PerfZonesDiverged>().is_some());
-            if let Err(e) = probe {
-                if !diverged && librazer::error::is_retryable(&e) {
-                    return Err(e);
-                }
+            match probe {
+                Ok(observed) => self.observe(observed, Some(tray_icon)),
+                Err(e) if !diverged && librazer::error::is_retryable(&e) => return Err(e),
+                Err(_) => {}
             }
             self.needs_sync = false;
             let write = self.enforce || diverged;
-            self.reconcile(tray_icon, device, "sync (after a read failure)", write);
+            let reason = if mode.writes_config() {
+                "sync (after a read failure)"
+            } else {
+                "sync (not applying the config)"
+            };
+            self.reconcile(tray_icon, device, reason, write);
             return Ok(());
         }
         // Allowed to touch the device now, even though needs_sync is still set. Aimed at the
@@ -329,9 +443,22 @@ impl ProgramState {
     }
 
     fn config_snapshot(&self) -> ConfigState {
+        // An unset profile is saved as the placeholder it was loaded with, whatever is in
+        // memory: `ConfigState::unset` counts a changed value as a hand edit that sets it.
+        let placeholder = ConfigState::default();
         ConfigState {
-            ac_state: self.ac_state,
-            battery_state: self.battery_state,
+            ac_state: if self.unset.ac {
+                placeholder.ac_state
+            } else {
+                self.ac_state
+            },
+            battery_state: if self.unset.battery {
+                placeholder.battery_state
+            } else {
+                self.battery_state
+            },
+            ac_state_unset: self.unset.ac,
+            battery_state_unset: self.unset.battery,
             enforce: self.enforce,
             reassert_on_resume: self.reassert_on_resume,
             app_profiles: self.app_profiles.clone(),
@@ -388,6 +515,7 @@ impl ProgramState {
     }
 
     fn adopt_config(&mut self, disk: ConfigState) {
+        self.unset = disk.unset();
         self.ac_state = disk.ac_state.normalized(self.fan_rpm_range);
         self.battery_state = disk.battery_state.normalized(self.fan_rpm_range);
         self.enforce = disk.enforce;
@@ -676,7 +804,14 @@ impl ProgramState {
         };
         let saved = DeviceState::carry_changes(self.saved_profile(), before, for_saved)
             .normalized(self.fan_rpm_range);
-        if self.ac_power {
+        // A pick is applied in every mode: it is the user's choice, not the config's. It
+        // reaches a profile only while the config is applied. A profile waiting for its
+        // first reading takes the pick with it (the reading sees what was picked); one
+        // that doesn't parse, or a guessed power source, would put it somewhere wrong.
+        let mode = self.mode();
+        if !mode.writes_config() {
+            log::info!("pick not saved to a profile ({mode:?})");
+        } else if self.ac_power {
             self.ac_state = saved;
         } else {
             self.battery_state = saved;
@@ -703,12 +838,6 @@ impl ProgramState {
         self.device_state = new_device_state.normalized(self.fan_rpm_range);
         log::info!("transient state applied {:?}", self.device_state);
         self.apply_and_refresh(tray_icon, device)
-    }
-
-    /// The config file exists but could not be read, so the saved profiles are defaults
-    /// that must not be pushed to the device on their own.
-    pub fn config_unread(&self) -> bool {
-        self.config_file.is_blocked()
     }
 
     /// A custom color is set and this model can show it.
@@ -762,6 +891,9 @@ impl ProgramState {
     ///
     /// Zones that disagree (an interrupted two-zone write) count as drift, and are
     /// repaired whenever `write` is set.
+    ///
+    /// Nothing is written while the config is not applied ([`Self::mode`]): the intent is
+    /// then only defaults or a placeholder, and the reading is what the tray follows.
     pub fn reconcile(
         &mut self,
         tray_icon: &mut tray_icon::TrayIcon,
@@ -769,9 +901,10 @@ impl ProgramState {
         reason: &str,
         write: bool,
     ) {
+        let was_applying = self.mode().writes_config();
         let drift = match DeviceState::read(device) {
             Ok(observed) => {
-                self.observed = observed;
+                self.observe(observed, Some(tray_icon));
                 observed.drifted_from(&self.device_state, device, &mut self.zone2_guard)
             }
             Err(e)
@@ -786,6 +919,9 @@ impl ProgramState {
                 return;
             }
         };
+        // Not when the config was not applied before this read either: a read that just
+        // adopted a profile must not be followed by a write from that same profile.
+        let write = write && was_applying && self.mode().writes_config();
 
         if !drift {
             log::info!("{reason}: device matches intended state");
@@ -836,7 +972,7 @@ mod tests {
                 ..ConfigState::default()
             },
             ConfigFile::open().expect("config path resolves"),
-            true,
+            Some(true),
             (2200, 5000),
         )
         .expect("state builds");
@@ -910,5 +1046,139 @@ mod tests {
 
         let tip = state.tooltip().expect("tooltip renders");
         assert!(tip.starts_with("Custom"), "mode was dropped: {tip:?}");
+    }
+
+    // ---- first run, an unknown power source, a config that doesn't parse ----------
+
+    const RANGE: (u16, u16) = (2200, 5000);
+
+    /// A config file in its own scratch directory, never the user's.
+    fn scratch_config(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "razer-tray-program-test-{}-{name}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("default-config.toml")
+    }
+
+    fn on_disk(path: &std::path::Path) -> ConfigState {
+        toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    fn reading(perf_mode: PerfMode) -> DeviceState {
+        DeviceState {
+            perf_mode,
+            fan_speed: FanSpeed::Manual(3000),
+            ..DeviceState::default()
+        }
+    }
+
+    #[test]
+    fn a_first_run_adopts_each_profile_on_its_own_power_source() {
+        let path = scratch_config("first-run");
+        let mut file = ConfigFile::at(path.clone());
+        let config = file.load();
+        let mut state = ProgramState::new(config, file, Some(true), RANGE).unwrap();
+        state.persist().unwrap();
+        assert_eq!(state.mode(), Mode::Adopt { ac_power: true });
+
+        let on_ac = reading(PerfMode::Performance);
+        state.observe(on_ac, None);
+        assert_eq!(state.ac_state, on_ac);
+        assert_eq!(state.device_state, on_ac);
+        assert_eq!(state.target(), state.device_state, "nothing to converge on");
+        assert_eq!(state.mode(), Mode::Apply);
+        assert!(state.unset.battery, "battery waits for its own reading");
+        let saved = on_disk(&path);
+        assert_eq!(saved.ac_state, on_ac);
+        assert!(!saved.ac_state_unset);
+        assert!(saved.battery_state_unset);
+        assert_eq!(saved.battery_state, ConfigState::default().battery_state);
+
+        // Unplugged: the battery profile is read, not applied from defaults.
+        state.ac_power = false;
+        assert_eq!(state.mode(), Mode::Adopt { ac_power: false });
+        let on_battery = reading(PerfMode::Silent);
+        state.observe(on_battery, None);
+        assert_eq!(state.battery_state, on_battery);
+        assert_eq!(state.ac_state, on_ac, "the AC profile is untouched");
+        assert_eq!(state.unset, Unset::default());
+        assert_eq!(on_disk(&path).unset(), Unset::default());
+    }
+
+    #[test]
+    fn an_unknown_power_source_only_follows_the_device() {
+        let path = scratch_config("power-unknown");
+        let mut file = ConfigFile::at(path);
+        let config = file.load();
+        let mut state = ProgramState::new(config, file, None, RANGE).unwrap();
+        assert_eq!(
+            state.mode(),
+            Mode::Observe(observe::ObserveReason::PowerUnknown)
+        );
+        let seen = reading(PerfMode::Hyperboost);
+        state.observe(seen, None);
+        assert_eq!(state.device_state, seen, "the menu checks what is set");
+        assert_eq!(
+            state.ac_state,
+            ConfigState::default().ac_state,
+            "not adopted"
+        );
+        assert!(state.unset.ac && state.unset.battery);
+        // Once Windows answers, the next reading is adopted.
+        state.power_known = true;
+        assert_eq!(state.mode(), Mode::Adopt { ac_power: true });
+    }
+
+    #[test]
+    fn a_valid_config_is_applied_as_before() {
+        let path = scratch_config("valid");
+        let mut file = ConfigFile::at(path.clone());
+        file.store(&ConfigState::default()).unwrap();
+        let config = file.load();
+        assert_eq!(config, ConfigState::default());
+        for power in [Some(true), None] {
+            let mut file = ConfigFile::at(path.clone());
+            let config = file.load();
+            let mut state = ProgramState::new(config, file, power, RANGE).unwrap();
+            assert_eq!(state.mode(), Mode::Apply);
+            let intent = state.device_state;
+            state.observe(reading(PerfMode::Silent), None);
+            assert_eq!(state.device_state, intent, "a reading only displays");
+            assert_eq!(state.observed, reading(PerfMode::Silent));
+        }
+    }
+
+    #[test]
+    fn a_config_that_does_not_parse_is_observed_until_reset() {
+        let path = scratch_config("corrupt");
+        std::fs::write(&path, "ac_state = [").unwrap();
+        let mut file = ConfigFile::at(path.clone());
+        let config = file.load();
+        let mut state = ProgramState::new(config, file, Some(true), RANGE).unwrap();
+        assert_eq!(
+            state.mode(),
+            Mode::Observe(observe::ObserveReason::ConfigCorrupt)
+        );
+        assert!(state.menu_options().offer_reset);
+        assert!(state.menu_options().config_problem.is_some());
+
+        let seen = reading(PerfMode::Performance);
+        state.observe(seen, None);
+        assert_eq!(state.device_state, seen);
+        assert!(state.persist().is_err(), "nothing saved over it");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "ac_state = [");
+
+        state.reset_config(None);
+        assert!(!state.menu_options().offer_reset);
+        assert_eq!(state.mode(), Mode::Adopt { ac_power: true });
+        assert_eq!(on_disk(&path), ConfigState::first_run());
+        state.observe(seen, None);
+        assert_eq!(
+            state.ac_state, seen,
+            "the reset adopts, it does not push defaults"
+        );
     }
 }

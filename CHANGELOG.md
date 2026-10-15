@@ -21,6 +21,24 @@ Windows 11, and nowhere else.
   chassis that reports zone 2 differently can't trigger a rewrite on every check. From upstream
   blauzim/razer-ctl `435c870`. On `0x029F` zone 2 reads back as written (3000 and 4000 RPM,
   2026-10-14); the repair path itself is not tested on hardware.
+- **First run reads the laptop instead of resetting it.** A new config used to be the hardcoded
+  defaults, applied at startup, so installing the tray put the laptop in Performance (Battery on
+  battery), turned the logo and keyboard backlight off and set an 80% charge limit. Now both
+  profiles start unset (`ac_state_unset` / `battery_state_unset` in the file). The first reading on
+  a power source becomes that source's profile and is not written back; the other source's profile
+  is read the first time the laptop runs on it. With the power source unknown nothing is adopted,
+  and a failed read retries on the resync backoff. Editing an unset profile's values by hand sets
+  it. Upstream's `load_config_or_adopt` (blauzim 435c870) copies one reading into both profiles and
+  applies it; that was not ported.
+- **A config that doesn't parse is no longer applied or replaced.** It used to become defaults on
+  the device, saved over the file once the timestamped copy existed. Now the tray only reads the
+  device (no profile, Action, Enforce, wake re-assert or zone repair writes) and saves nothing until
+  the file parses again or you pick **Reset settings to defaults**, which the menu offers only then.
+  A reset is a first run, so it reads the profiles from the laptop. A dialog and a line at the top of
+  the menu say what happened. A file that can't be read is now read-only for the device too: wake
+  re-asserts and zone repairs used to write defaults while it waited.
+- Configs written before this load and save byte for byte as before (a test holds a 0.9.5 file).
+  Whether a reading at the moment of an unplug catches the EC mid-change is not measured.
 
 ## 0.9.5: keyboard colors, a clearer menu, and a tray that can't die at login or lose its config
 Built and tested on `0x029F` (2026-09-23). Probes that set the scope, same machine: `0x070f` is Max

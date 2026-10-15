@@ -173,6 +173,16 @@ pub fn on_reading(
     }
 }
 
+/// Whether the read-back after a resync probe may write, given the mode from BEFORE the
+/// probe. The probe's reading can adopt a profile and switch the mode to `Apply`; judging
+/// by the mode after it let that same sync write the profile it had just adopted (with
+/// Enforce on, a Manual set point below the floor is adopted as the floor, so the second
+/// read saw drift). Diverged perf zones are repaired only when the config was already
+/// being applied, as before.
+pub fn probe_may_write(before: Mode, enforce: bool, diverged: bool) -> bool {
+    (enforce || diverged) && before.writes_config()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,5 +387,24 @@ mod tests {
         assert!(!u.on(true) && u.on(false) && u.any());
         u.clear(false);
         assert!(!u.any());
+    }
+
+    #[test]
+    fn a_probe_that_adopts_never_writes_in_the_same_sync() {
+        let adopting = Mode::Adopt { ac_power: true };
+        assert!(!probe_may_write(adopting, true, false));
+        assert!(!probe_may_write(adopting, true, true));
+        assert!(!probe_may_write(
+            Mode::Observe(ObserveReason::ConfigCorrupt),
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn a_probe_while_applying_writes_only_for_enforce_or_diverged_zones() {
+        assert!(probe_may_write(Mode::Apply, true, false));
+        assert!(probe_may_write(Mode::Apply, false, true));
+        assert!(!probe_may_write(Mode::Apply, false, false));
     }
 }

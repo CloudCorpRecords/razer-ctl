@@ -415,7 +415,7 @@ impl ProgramState {
                 Err(_) => {}
             }
             self.needs_sync = false;
-            let write = self.enforce || diverged;
+            let write = observe::probe_may_write(mode, self.enforce, diverged);
             let reason = if mode.writes_config() {
                 "sync (after a read failure)"
             } else {

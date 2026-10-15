@@ -49,6 +49,14 @@ Windows 11, and nowhere else.
   DeathAdder Elite). PIDs in the laptop table now go first, then the rest highest first, and the
   log names the PID in use. Not tested on hardware here; the reporter's test build bound the
   laptop on every run.
+- **A resync that adopts a profile doesn't write it back.** With "Undo changes made by Synapse"
+  on, a resync whose first reading adopted an unset profile went on to write that profile in the
+  same pass: the check for "was the config applied before this read" ran after the adoption.
+  A Manual set point below the floor, which a fresh boot reports, is adopted as the floor, so the
+  second read saw drift and wrote it. The check now uses the mode from before the first read. Not
+  tested on hardware; unit tests cover the rule.
+- `razer-cli fan info` in the 0.9.x notes below was a command that doesn't exist; it is
+  `razer-cli auto info`.
 
 ## 0.9.5: keyboard colors, a clearer menu, and a tray that can't die at login or lose its config
 Built and tested on `0x029F` (2026-09-23). Probes that set the scope, same machine: `0x070f` is Max
@@ -96,8 +104,8 @@ against 5 resumes); the EC kept its state across two measured standbys.
 - **Fans.** Max fan exists only in Custom, and a manual RPM snaps to the chassis range and the
   100-RPM step; both used to look like permanent drift. A rejected manual RPM no longer switches the
   fan to Manual, and fan write failures are returned. The tooltip never shows an ignored set point
-  as the speed, and shows "…" until a read is trusted. `razer-cli fan info` uses the same trust rule,
-  and `auto json` adds `fan_actual_trusted`.
+  as the speed, and shows "…" until a read is trusted. `razer-cli fan info` (Wrong; see Unreleased.) uses the
+  same trust rule, and `auto json` adds `fan_actual_trusted`.
 - **Power source.** An "unknown" `ACLineStatus` keeps the previous answer instead of meaning AC.
 - **dGPU telemetry doesn't wake a sleeping GPU.** Before each `nvidia-smi` sample the tray reads
   the GPU's power state from Windows, which doesn't wake it, and skips the sample while the GPU is

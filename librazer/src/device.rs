@@ -62,7 +62,19 @@ impl Device {
         candidates.sort_by_key(|info| (info.interface_number() != 0, info.usage_page() != 0xff00));
 
         for info in candidates {
-            let device = api.open_path(info.path())?;
+            // One interface that won't open (held exclusively, or access denied) must not
+            // end the search: another interface of the same PID may be the control one.
+            let device = match api.open_path(info.path()) {
+                Ok(device) => device,
+                Err(e) => {
+                    log::debug!(
+                        "PID {:#06x}: cannot open {:?}: {e}",
+                        descriptor.pid,
+                        info.path()
+                    );
+                    continue;
+                }
+            };
             let probe: Vec<u8> = std::iter::once(0u8)
                 .chain(Into::<Vec<u8>>::into(&Packet::new(0x0084, &[0, 0])))
                 .collect();

@@ -1,98 +1,61 @@
 # Changelog
 
-Release history for this fork. The README carries the current behavior; this file carries how it
-got there. Every hardware claim was verified on a Razer Blade 16 (2023), `RZ09-0483`, PID `0x029F`,
-Windows 11, and nowhere else.
+Release history for this fork: the README has current behavior, this file how it got there.
+Hardware claims were checked on a Razer Blade 16 (2023), `RZ09-0483`, PID `0x029F`, Windows 11,
+unless a user report is cited.
 
-## 0.9.6: unlisted laptops that lack a feature, a first run that reads the laptop, Blade 18 profile
-CLI checked on `0x029F` (2026-10-15): `auto json` byte-identical to 0.9.5, and fan set points above
-5000 run at 5000. #2's reporter ran a test build on a Blade 15 2018 (`0x023b`): `info`, `json` and
-the tray menus worked, the charge limit and fan speed read answered "not supported", and the fan
-changed between 5000 and 5700 set points. Tray run on `0x029F` for 11 minutes (2026-10-15): the
-existing config loaded and held unchanged; with no config, the first run adopted the plugged-in
-profile without writing; a config that didn't parse was copied aside, left in place and not applied.
+## 0.9.6: laptops that lack a feature, a first run that reads the laptop, Blade 18 profile (2026-10-15)
+Tested on `0x029F` (2026-10-15): `auto json` matches 0.9.5 byte for byte; fan set points above 5000
+run at 5000; the tray ran 11 minutes on the existing config, a missing config and a broken one.
+#2's reporter ran a test build on a Blade 15 2018 Base (`0x023b`).
 
 **New**
-- **Razer Blade 18 (2023), `RZ09-0484U`, PID `0x02A0`**, from a user's hardware report
-  ([#1](https://github.com/sqmagellan/razer-ctl/issues/1)). It now gets its own profile instead of
-  the generic one. Everything worked for them except manual fan RPM, which holds the fans near
-  3200/3300 whatever the set point; that is still open. Not tested here.
+- **Razer Blade 18 (2023), `RZ09-0484U`, PID `0x02A0`** gets its own profile, from a user report
+  ([#1](https://github.com/sqmagellan/razer-ctl/issues/1)). Everything worked for them except manual
+  fan RPM, which holds the fans near 3200/3300. Still open. Not tested here.
+- **Laptops not in the supported list keep working without a feature they lack.** A logo, keyboard
+  brightness or charge limit the EC answers "not supported" (0x05) is left alone: reads skip it,
+  writes skip it, drift checks ignore it, and its menu shows "(not supported)". One such answer used
+  to fail every read, so the tray could change only the refresh rate
+  ([#2](https://github.com/sqmagellan/razer-ctl/issues/2)). Supported models are unchanged.
+- **Blade 15 2018 Base (`0x023b`):** fan range up to 5700 (its owner heard 5700 over 5000; Synapse
+  offers 5700), and the logo menu is grayed out from the start: that EC reads the logo back but
+  ignores writes. Per-PID list in `librazer/src/unsupported.rs`.
+- **`razer-cli auto info` and `auto json` report what they can.** Both stopped at the first rejected
+  read. `info` now marks each missing feature "not supported", including "Fan actual" on an EC with
+  no speed read. `json` sets those fields to `null` and lists them in a new `unsupported` field,
+  left out when empty, so a laptop that answers everything prints the same JSON as before.
 
 **Reliability**
-- **Fans.** A manual fan whose zone 2 set point is off target now counts as drift, so it is put
-  back wherever other drift is ("Undo changes made by Synapse", and the startup, resync and wake
-  checks). The tray read zone 1 only, so another tool's zone 2 write, or a two-zone write cut off
-  between the zones, went unseen. One more read per check in Manual. After 3 repairs in a row
-  that don't hold, the tray stops checking zone 2 until it restarts and says so in the log, so a
-  chassis that reports zone 2 differently can't trigger a rewrite on every check. From upstream
-  blauzim/razer-ctl `435c870`. On `0x029F` zone 2 reads back as written (3000 and 4000 RPM,
-  2026-10-14); the repair path itself is not tested on hardware.
-- **First run reads the laptop instead of resetting it.** A new config used to be the hardcoded
-  defaults, applied at startup, so installing the tray put the laptop in Performance (Battery on
-  battery), turned the logo and keyboard backlight off and set an 80% charge limit. Now both
-  profiles start unset (`ac_state_unset` / `battery_state_unset` in the file). The first reading on
-  a power source becomes that source's profile and is not written back; the other source's profile
-  is read the first time the laptop runs on it. With the power source unknown nothing is adopted,
-  and a failed read retries on the resync backoff. Editing an unset profile's values by hand sets
-  it. Upstream's `load_config_or_adopt` (blauzim 435c870) copies one reading into both profiles and
-  applies it; that was not ported.
+- **First run reads the laptop instead of resetting it.** A new config used to be hardcoded
+  defaults, applied at startup: Performance mode, logo and backlight off, 80% charge limit. Now each
+  profile starts unset (`ac_state_unset` / `battery_state_unset`) and takes the first reading on its
+  power source, without writing it back. Hand-editing an unset profile sets it. The `0x029F` EC
+  keeps brightness per power source and can take seconds to switch, so an adopted profile can hold
+  the other source's brightness.
 - **A config that doesn't parse is no longer applied or replaced.** It used to become defaults on
-  the device, saved over the file once the timestamped copy existed. Now the tray only reads the
-  device (no profile, Action, Enforce, wake re-assert or zone repair writes) and saves nothing until
-  the file parses again or you pick **Reset settings to defaults**, which the menu offers only then.
-  A reset is a first run, so it reads the profiles from the laptop. A dialog and a line at the top of
-  the menu say what happened. A file that can't be read is now read-only for the device too: wake
-  re-asserts and zone repairs used to write defaults while it waited.
-- Configs written before this load and save byte for byte as before (a test holds a 0.9.5 file).
-  After a power-source change the tray waits 5 s before adopting. The `0x029F` EC keeps its own
-  keyboard brightness per source (82% plugged in, 88% on battery here) and its switch took 0.4 s
-  to over 25 s, so an adopted profile can still hold the other source's brightness.
-- **Unlisted laptop with a Razer mouse or keyboard attached.** For a model not in the supported
-  list, the app tries each Razer USB device in turn and keeps the first that answers. That order
-  was random on every run, and an attached Razer mouse answers too, so a run could bind the mouse:
-  the fan range changed between runs and the same command alternated between working and "not
-  supported (0x05)" ([#2](https://github.com/sqmagellan/razer-ctl/issues/2), Blade 15 2018 with a
-  DeathAdder Elite). PIDs in the laptop table now go first, then the rest highest first, and the
-  log names the PID in use. Not tested on hardware here; the reporter's test build bound the
-  laptop on every run.
-- **A resync that adopts a profile doesn't write it back.** With "Undo changes made by Synapse"
-  on, a resync whose first reading adopted an unset profile went on to write that profile in the
-  same pass: the check for "was the config applied before this read" ran after the adoption.
-  A Manual set point below the floor, which a fresh boot reports, is adopted as the floor, so the
-  second read saw drift and wrote it. The check now uses the mode from before the first read. Not
-  tested on hardware; unit tests cover the rule.
-- `razer-cli fan info` in the 0.9.x notes below was a command that doesn't exist; it is
-  `razer-cli auto info`.
-- **Unlisted laptops keep working without a setting they lack.** On a model not in the supported
-  list, a logo, keyboard brightness or charge limit that the EC answers with "not supported" (0x05)
-  is recorded and left alone: the profile keeps its own value for it, writes skip it, drift checks
-  ignore it, and its tray menu shows "(not supported)", disabled. One such answer used to fail every state read,
-  so the tray could change nothing but the refresh rate (#2). Supported models are unchanged: a
-  0x05 there is still an error. Not tested on hardware; unit tests cover the read, write and drift
-  paths. On #2's Blade 15 2018 the reporter's test build showed the charge limit and fan speed read
-  as not supported, and every other tray menu answered (2026-10-15). Its logo reads back but
-  ignores writes, which the app can't detect, so that model's logo menu is grayed out from the
-  start (a per-PID list in `librazer/src/unsupported.rs`); `razer-cli` still reads and writes it.
-- **`razer-cli auto info` and `auto json` report what they can.** Both stopped at the first read
-  the laptop rejected and showed nothing after it. `info` now prints every feature and "not
-  supported" for the ones the laptop lacks. `json` sets those fields to `null` and names them in a
-  new `unsupported` field, left out when empty, so a model that answers every read prints the same
-  JSON as before. Other errors still fail the command. An EC with no fan speed read prints "Fan
-  actual: not supported" after the fan mode instead of failing the fan line.
-- **A response that doesn't match says how.** "Response does not match the report" now adds the
-  sent and received header (status, command, id, remaining packets, size). On #2's Blade 15 2018,
-  `0x0d88` (fan RPM) failed this way in one build and answered 0x05 in the next: that EC has no
-  fan speed read. A failed fan
-  RPM read in the tray now pauses fan reads for 60 s: each one retried for about 4 s on the UI
-  thread, so hovering froze the tray on that laptop.
-- **`razer-cli auto fan rpm` checks the laptop's own fan range.** It accepted 2000 to 5600 RPM, the
-  range across every known Blade. Outside a laptop's own range the EC runs at its floor or ceiling
-  and still reports success, so values outside `fan_rpm_range` (printed by `info`) are now
-  rejected with the speed the fan would really run at. On `0x029F`, set points of 5300, 5500 and
-  5700 all ran at 5000/4900 RPM (2026-10-15). `0x023b` (Blade 15 2018 Base) goes to 5700, the
-  value Synapse offers there: its reporter heard the fan change between 5000 and 5700 set points.
-- Versions: `razer-tray` 0.9.6, `librazer` 0.10.0 (breaking: `ConfigState` gains
-  `ac_state_unset` and `battery_state_unset`), `razer-cli` 0.9.0.
+  the laptop and then on disk. Now the tray only reads the laptop and saves nothing until the file
+  parses or you pick **Reset settings to defaults**, offered only then. A dialog and the top of the
+  menu say so. A file that can't be read is handled the same way.
+- **An attached Razer mouse no longer gets picked as the laptop.** On an unlisted model the app tried
+  each Razer USB device in random order, and a mouse answers too, so the fan range and results
+  changed between runs (#2). Known laptop PIDs now go first, and the log names the PID in use.
+- **Fan zone 2 is checked.** A manual fan whose zone 2 set point is off target now counts as drift
+  and is repaired wherever other drift is. After 3 repairs in a row that don't hold, the check stops
+  until restart. From upstream blauzim/razer-ctl `435c870`. Zone 2 reads back as written on
+  `0x029F`; the repair path isn't tested on hardware.
+- **A resync that adopts a profile doesn't write it back.** With "Undo changes made by Synapse" on,
+  a resync that adopted an unset profile wrote it in the same pass. Unit tests cover it.
+- **`razer-cli auto fan rpm` checks the laptop's own range.** It accepted 2000–5600 on any model.
+  Outside a model's range the EC runs at its floor or ceiling and still reports success. On
+  `0x029F`, 5300, 5500 and 5700 all ran at 5000.
+- **A failed fan speed read pauses fan reads for 60 s.** Each one retried for about 4 s on the UI
+  thread, so hovering froze the tray on #2's laptop. "Response does not match" errors now show the
+  sent and received header.
+- `razer-cli fan info` in the 0.9.x notes below doesn't exist; it's `razer-cli auto info`.
+- Configs from 0.9.5 load and save byte for byte as before.
+- Versions: `razer-tray` 0.9.6, `librazer` 0.10.0 (breaking: `ConfigState` gains `ac_state_unset`
+  and `battery_state_unset`), `razer-cli` 0.9.0.
 
 ## 0.9.5: keyboard colors, a clearer menu, and a tray that can't die at login or lose its config
 Built and tested on `0x029F` (2026-09-23). Probes that set the scope, same machine: `0x070f` is Max

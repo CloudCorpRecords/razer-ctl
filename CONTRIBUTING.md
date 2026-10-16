@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for looking. Two things about this project shape everything below:
+Thanks for looking. Two things shape everything below:
 
 1. **It talks directly to your laptop's embedded controller.** A wrong command doesn't throw an
    exception, it writes to firmware. So the bar for "we know this works" is hardware evidence, not
@@ -14,8 +14,8 @@ A report from a model that isn't tested here. Use the
 [unsupported model issue template](.github/ISSUE_TEMPLATE/unsupported_model.yml); it asks for
 `razer-cli enumerate`, the SKU, and which features actually worked.
 
-**Please leave fields blank rather than guessing.** A blank fan range costs nothing; a guessed one
-goes into the device table and silently misconfigures that model for everyone who comes after.
+**Leave fields blank rather than guessing.** A blank fan range costs nothing; a guessed one goes
+into the device table and misconfigures that model for everyone after you.
 
 ## Code
 
@@ -39,10 +39,8 @@ them on its Windows job).
 **`librazer` is the testable core**: HID protocol, device model, and every pure helper. It builds
 and tests on any host.
 
-**`razer-tray` can only be built for Windows.** That has a consequence people get wrong: a pure
-function placed in the tray crate is a function the test suite can never reach on a normal
-development machine. If it doesn't need Win32, put it in `librazer`. Several helpers were moved for
-exactly this reason (the tooltip budgeter, the perf-mode cycle, the brightness step).
+**`razer-tray` builds only for Windows**, so a pure function there can't be tested on most
+machines. If it doesn't need Win32, put it in `librazer`.
 
 ### Hardware claims
 

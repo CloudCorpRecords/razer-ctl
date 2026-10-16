@@ -3,11 +3,9 @@
 ## Reporting
 
 Please use [GitHub's private vulnerability reporting](../../security/advisories/new) rather than a
-public issue. This is a single-maintainer hobby project, so replies may take a while.
+public issue. One person maintains this, so replies may take a while.
 
 ## What this software does and doesn't do
-
-A tool that talks to your laptop's embedded controller should say what it touches:
 
 - **No kernel driver.** Everything goes over USB HID feature reports to the keyboard's control
   interface, from user space. The usual way to read CPU temperature (the WinRing0 ring-0 driver) was
@@ -27,7 +25,6 @@ A tool that talks to your laptop's embedded controller should say what it touche
 
 ## Binary integrity
 
-Release binaries are **not code-signed yet**, so SmartScreen warns on first run. Each release
-publishes `SHA256SUMS.txt` to compare against `Get-FileHash`. Code signing via
-the SignPath Foundation OSS program is planned but not in place; assume unsigned until a release
-says otherwise.
+Release binaries **aren't code-signed**, so SmartScreen warns on first run. Each release publishes
+`SHA256SUMS.txt` to compare against `Get-FileHash`, and a build-provenance attestation (see the
+README's Install section). Assume unsigned until a release says otherwise.

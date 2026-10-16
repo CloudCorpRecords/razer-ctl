@@ -33,10 +33,10 @@ pub const FAN_RPM_STEP: u16 = 400;
 /// disagreeing numbers for the same idea: `command.rs` hard-coded `0..=5500`, this ceiling
 /// was 5300, and the per-PID table reaches 5600 (Blade 14 2025). A caller-supplied RPM was
 /// therefore validated against a bound that matched no real machine. Both ends now come
-/// from the device tables: floor 2000 (Blade 15 2021 Advanced), ceiling 5600.
-/// A test in `descriptor.rs` keeps them consistent with the table.
+/// from the device tables: floor 2000 (Blade 15 2021 Advanced), ceiling 5700 (Blade 15
+/// 2018 Base, issue #2). A test in `descriptor.rs` keeps them consistent with the table.
 pub const FAN_RPM_MIN_ANY: u16 = 2000;
-pub const FAN_RPM_MAX_ANY: u16 = 5600;
+pub const FAN_RPM_MAX_ANY: u16 = 5700;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum PerfMode {

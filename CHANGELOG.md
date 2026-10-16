@@ -63,22 +63,26 @@ Windows 11, and nowhere else.
   ignore it, and its tray menu shows "(not supported)", disabled. One such answer used to fail every state read,
   so the tray could change nothing but the refresh rate (#2). Supported models are unchanged: a
   0x05 there is still an error. Not tested on hardware; unit tests cover the read, write and drift
-  paths.
+  paths. On #2's Blade 15 2018 the reporter's test build showed the charge limit and fan speed read
+  as not supported, and every other tray menu answered (2026-10-15).
 - **`razer-cli auto info` and `auto json` report what they can.** Both stopped at the first read
   the laptop rejected and showed nothing after it. `info` now prints every feature and "not
   supported" for the ones the laptop lacks. `json` sets those fields to `null` and names them in a
   new `unsupported` field, left out when empty, so a model that answers every read prints the same
-  JSON as before. Other errors still fail the command.
+  JSON as before. Other errors still fail the command. An EC with no fan speed read prints "Fan
+  actual: not supported" after the fan mode instead of failing the fan line.
 - **A response that doesn't match says how.** "Response does not match the report" now adds the
   sent and received header (status, command, id, remaining packets, size). On #2's Blade 15 2018,
-  `0x0d88` (fan RPM) fails this way and the error didn't say which field differed. A failed fan
+  `0x0d88` (fan RPM) failed this way in one build and answered 0x05 in the next: that EC has no
+  fan speed read. A failed fan
   RPM read in the tray now pauses fan reads for 60 s: each one retried for about 4 s on the UI
   thread, so hovering froze the tray on that laptop.
 - **`razer-cli auto fan rpm` checks the laptop's own fan range.** It accepted 2000 to 5600 RPM, the
   range across every known Blade. Outside a laptop's own range the EC runs at its floor or ceiling
   and still reports success, so values outside `fan_rpm_range` (printed by `info`) are now
   rejected with the speed the fan would really run at. On `0x029F`, set points of 5300, 5500 and
-  5700 all ran at 5000/4900 RPM (2026-10-15).
+  5700 all ran at 5000/4900 RPM (2026-10-15). `0x023b` (Blade 15 2018 Base) goes to 5700, the
+  value Synapse offers there: its reporter heard the fan change between 5000 and 5700 set points.
 
 ## 0.9.5: keyboard colors, a clearer menu, and a tray that can't die at login or lose its config
 Built and tested on `0x029F` (2026-09-23). Probes that set the scope, same machine: `0x070f` is Max

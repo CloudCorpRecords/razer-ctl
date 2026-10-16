@@ -366,8 +366,16 @@ impl Cli for feature::Fan {
                     }
                     Err(e) => println!("{}", e),
                 };
-                // Both zones, through the same trust rule the tray uses.
-                let (fan, trusted) = librazer::state::sample_fan_rpm(device, 3)?;
+                // Both zones, through the same trust rule the tray uses. Some ECs have
+                // no speed read at all (issue #2): fan control still works there, so
+                // only the actual-speed line says so.
+                let (fan, trusted) = match librazer::state::sample_fan_rpm(device, 3) {
+                    Err(e) if librazer::error::is_not_supported(&e) => {
+                        println!("Fan actual: not supported");
+                        return Ok(());
+                    }
+                    r => r?,
+                };
                 println!(
                     "Fan actual: {}/{} RPM{}",
                     fan.fan1,

@@ -246,7 +246,7 @@ pub const FAN_RANGE_BY_PID: &[(u16, (u16, u16))] = &[
     (0x0234, (3500, 5300)), // Blade Pro 2019
     (0x0239, (3500, 5300)), // Blade Stealth 2019
     (0x023a, (3500, 5300)), // Blade 15 2019 Advanced
-    (0x023b, (3500, 5000)), // Blade 15 2018 Base
+    (0x023b, (3500, 5700)), // Blade 15 2018 Base -- 5700 heard over 5000 (issue #2, 2026-10-15)
     (0x0240, (3500, 5000)), // Blade 15 2018 Mercury
     (0x0245, (3500, 5300)), // Blade 15 2019 Mercury
     (0x0246, (3500, 5000)), // Blade 15 2019 Base

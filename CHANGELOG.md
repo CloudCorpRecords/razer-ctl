@@ -4,7 +4,13 @@ Release history for this fork. The README carries the current behavior; this fil
 got there. Every hardware claim was verified on a Razer Blade 16 (2023), `RZ09-0483`, PID `0x029F`,
 Windows 11, and nowhere else.
 
-## Unreleased
+## 0.9.6: unlisted laptops that lack a feature, a first run that reads the laptop, Blade 18 profile
+CLI checked on `0x029F` (2026-10-15): `auto json` byte-identical to 0.9.5, and fan set points above
+5000 run at 5000. #2's reporter ran a test build on a Blade 15 2018 (`0x023b`): `info`, `json` and
+the tray menus worked, the charge limit and fan speed read answered "not supported", and the fan
+changed between 5000 and 5700 set points. Tray run on `0x029F` for 11 minutes (2026-10-15): the
+existing config loaded and held unchanged; with no config, the first run adopted the plugged-in
+profile without writing; a config that didn't parse was copied aside, left in place and not applied.
 
 **New**
 - **Razer Blade 18 (2023), `RZ09-0484U`, PID `0x02A0`**, from a user's hardware report
@@ -85,6 +91,8 @@ Windows 11, and nowhere else.
   rejected with the speed the fan would really run at. On `0x029F`, set points of 5300, 5500 and
   5700 all ran at 5000/4900 RPM (2026-10-15). `0x023b` (Blade 15 2018 Base) goes to 5700, the
   value Synapse offers there: its reporter heard the fan change between 5000 and 5700 set points.
+- Versions: `razer-tray` 0.9.6, `librazer` 0.10.0 (breaking: `ConfigState` gains
+  `ac_state_unset` and `battery_state_unset`), `razer-cli` 0.9.0.
 
 ## 0.9.5: keyboard colors, a clearer menu, and a tray that can't die at login or lose its config
 Built and tested on `0x029F` (2026-09-23). Probes that set the scope, same machine: `0x070f` is Max

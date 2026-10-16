@@ -101,7 +101,8 @@ The config is `%APPDATA%\razer-tray\config\default-config.toml`. The log is
 | Razer Blade 15 (2022) | `0x028A` | 3500–5000 RPM |
 
 **Other models** start on a generic profile with every feature offered. The fan range comes from a
-table of 43 more PIDs transcribed from community data. There is no init sequence, because a guessed
+table of 43 more PIDs transcribed from community data; the Blade 15 2018 Base (`0x023b`) goes to
+5700 from a user's report ([#2](https://github.com/sqmagellan/razer-ctl/issues/2)). There is no init sequence, because a guessed
 one is worse than none. Commands the firmware lacks answer `NotSupported`. On these models the tray
 leaves a logo, keyboard brightness or charge limit the firmware lacks alone and shows its menu as
 "(not supported)"; any other missing command fails at once and the error says which.

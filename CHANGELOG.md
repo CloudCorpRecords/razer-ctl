@@ -4,6 +4,14 @@ Release history for this fork: the README has current behavior, this file how it
 Hardware claims were checked on a Razer Blade 16 (2023), `RZ09-0483`, PID `0x029F`, Windows 11,
 unless a user report is cited.
 
+## Unreleased
+
+**Reliability**
+- **An "off" charge limit is read twice before it's believed.** On `0x029F`, `auto json` read a
+  60% limit as off three times in an hour while the battery held at 74% on AC for 19 hours: false
+  reads. The second read wins when they differ, and both raw bytes go to the log. Costs one more
+  read and 50 ms when the limit really is off.
+
 ## 0.9.6: laptops that lack a feature, a first run that reads the laptop, Blade 18 profile (2026-10-15)
 Tested on `0x029F` (2026-10-15): `auto json` matches 0.9.5 byte for byte; fan set points above 5000
 run at 5000; the tray ran 11 minutes on the existing config, a missing config and a broken one.

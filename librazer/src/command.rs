@@ -455,8 +455,45 @@ pub fn set_lights_always_on(
     Ok(())
 }
 
+/// Read the charge limit. An "off" answer is read a second time before it's believed.
+///
+/// On `0x029F` (2026-10-15), `auto json` read the limit as off three times in an hour while
+/// the battery sat at 74% on AC for 19 hours, so the limit was in force: those were false
+/// reads. About 17,000 later reads didn't reproduce one, so the byte behind them is unknown.
+/// Every false read seen so far said off, so an off that the second read contradicts is
+/// taken as false. Either way a mismatch is logged with both raw bytes, so the next one is
+/// caught. Costs one more read and 50 ms when the limit really is off.
 pub fn get_battery_care(device: &impl HidTransport) -> Result<BatteryCare> {
-    device.send(Packet::new(0x0792, &[0]))?.get_args()[0].try_into()
+    let read = || -> Result<(BatteryCare, u8, String)> {
+        let response = device.send(Packet::new(0x0792, &[0]))?;
+        let byte = response.get_args()[0];
+        Ok((byte.try_into()?, byte, response.header()))
+    };
+    let (first, first_byte, first_header) = read()?;
+    if !first.is_disabled() {
+        return Ok(first);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    match read() {
+        Ok((_, second_byte, _)) if second_byte == first_byte => Ok(first),
+        Ok((second, second_byte, second_header)) => {
+            log::warn!(
+                "charge limit read as off ({first_byte:#04x}; {first_header}), then \
+                 {second} ({second_byte:#04x}; {second_header}); using the second"
+            );
+            Ok(second)
+        }
+        // A model without the command answers that way every time; let the caller learn it.
+        Err(e) if crate::error::is_not_supported(&e) => Err(e),
+        // The confirming read failed; the first answer is all there is.
+        Err(e) => {
+            log::warn!(
+                "charge limit read as off ({first_byte:#04x}; {first_header}); \
+                 the confirming read failed: {e}"
+            );
+            Ok(first)
+        }
+    }
 }
 
 pub fn set_battery_care(device: &impl HidTransport, mode: BatteryCare) -> Result<()> {
@@ -554,6 +591,54 @@ mod tests {
                 "rpm {rpm}: both zones must be written"
             );
         }
+    }
+
+    #[test]
+    fn a_false_off_reading_is_corrected_by_the_second_read() {
+        let reads = std::cell::Cell::new(0);
+        let mock = MockTransport::with_responder(move |p| {
+            assert_eq!(p.command(), 0x0792);
+            reads.set(reads.get() + 1);
+            // First answer: a zeroed byte (decodes as off). Second: enabled at 60%.
+            reply(&[if reads.get() == 1 { 0x00 } else { 0xBC }])
+        });
+        assert_eq!(
+            get_battery_care(&mock).unwrap(),
+            BatteryCare::from_percent(60).unwrap()
+        );
+        assert_eq!(mock.sent_count(), 2);
+    }
+
+    #[test]
+    fn a_real_off_reads_off_twice_and_an_enabled_limit_reads_once() {
+        let off = MockTransport::with_responder(|_| reply(&[0x50]));
+        assert_eq!(get_battery_care(&off).unwrap(), BatteryCare::DISABLE);
+        assert_eq!(off.sent_count(), 2);
+
+        let on = MockTransport::with_responder(|_| reply(&[0xBC]));
+        assert_eq!(
+            get_battery_care(&on).unwrap(),
+            BatteryCare::from_percent(60).unwrap()
+        );
+        assert_eq!(on.sent_count(), 1);
+    }
+
+    #[test]
+    fn a_confirming_not_supported_is_passed_up_for_the_caller_to_learn() {
+        let reads = std::cell::Cell::new(0);
+        let mock = MockTransport::with_fallible_responder(move |_| {
+            reads.set(reads.get() + 1);
+            if reads.get() == 1 {
+                Ok(reply(&[0x50]))
+            } else {
+                Err(anyhow::Error::new(
+                    crate::packet::ResponseError::NotSupported,
+                ))
+            }
+        });
+        assert!(crate::error::is_not_supported(
+            &get_battery_care(&mock).unwrap_err()
+        ));
     }
 
     #[test]

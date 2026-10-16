@@ -45,7 +45,15 @@ impl Device {
     /// on them. For a model whose features nobody has checked: the generic profile and
     /// `razer-cli manual`. See [`crate::unsupported`].
     pub fn learning_unsupported(mut self) -> Self {
-        self.unsupported = Some(UnsupportedLog::default());
+        let known = crate::unsupported::known_lacking(self.info.pid);
+        for feature in known.iter() {
+            log::info!(
+                "PID {:#06x} is known to ignore {} writes; it is left alone",
+                self.info.pid,
+                feature.name()
+            );
+        }
+        self.unsupported = Some(UnsupportedLog::starting_with(known));
         self
     }
 

@@ -13,6 +13,10 @@
 //! Only optional settings are learned. Performance and fan mode share one command
 //! (`0x0d82`), and without it the tray has nothing to show, so that failure still ends
 //! the read. Supported models never learn: a 0x05 there stays an error, as before.
+//!
+//! A few ECs accept a command and ignore it, so they never answer 0x05 and nothing is
+//! learned. [`KNOWN_LACKING`] lists those per PID from user reports; such a setting starts
+//! out recorded as lacking.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -71,11 +75,32 @@ impl Unsupported {
     }
 }
 
+/// Settings a model's EC accepts but ignores, by PID, from user reports. The tray shows
+/// them as "(not supported)" from the start instead of offering a menu that does nothing.
+pub const KNOWN_LACKING: &[(u16, &[Optional])] = &[
+    // Blade 15 2018 Base, issue #2: the logo reads back but writes change nothing.
+    (0x023b, &[Optional::Logo]),
+];
+
+/// What [`KNOWN_LACKING`] says the model with `pid` lacks; empty for any other PID.
+pub fn known_lacking(pid: u16) -> Unsupported {
+    KNOWN_LACKING
+        .iter()
+        .filter(|(p, _)| *p == pid)
+        .flat_map(|(_, features)| features.iter())
+        .fold(Unsupported::default(), |set, f| set.with(*f))
+}
+
 /// The record a device keeps while it runs. Atomic so a `Device` stays `Sync`.
 #[derive(Debug, Default)]
 pub struct UnsupportedLog(AtomicU8);
 
 impl UnsupportedLog {
+    /// A record that starts with `known` already marked.
+    pub fn starting_with(known: Unsupported) -> Self {
+        Self(AtomicU8::new(known.0))
+    }
+
     pub fn get(&self) -> Unsupported {
         Unsupported(self.0.load(Ordering::Relaxed))
     }
@@ -97,6 +122,19 @@ mod tests {
         assert!(!s.contains(Optional::Logo));
         assert_eq!(s.iter().collect::<Vec<_>>(), vec![Optional::BatteryCare]);
         assert!(Unsupported::default().is_empty());
+    }
+
+    #[test]
+    fn the_blade_15_2018_base_starts_without_a_logo_and_nothing_else_does() {
+        let known = known_lacking(0x023b);
+        assert_eq!(known.iter().collect::<Vec<_>>(), vec![Optional::Logo]);
+        assert!(known_lacking(0x029f).is_empty());
+
+        let log = UnsupportedLog::starting_with(known);
+        assert_eq!(log.get(), known);
+        // Already recorded, so a later 0x05 isn't logged as news.
+        assert!(!log.mark(Optional::Logo));
+        assert!(log.mark(Optional::BatteryCare));
     }
 
     #[test]

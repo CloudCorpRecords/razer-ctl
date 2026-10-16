@@ -64,7 +64,9 @@ Windows 11, and nowhere else.
   so the tray could change nothing but the refresh rate (#2). Supported models are unchanged: a
   0x05 there is still an error. Not tested on hardware; unit tests cover the read, write and drift
   paths. On #2's Blade 15 2018 the reporter's test build showed the charge limit and fan speed read
-  as not supported, and every other tray menu answered (2026-10-15).
+  as not supported, and every other tray menu answered (2026-10-15). Its logo reads back but
+  ignores writes, which the app can't detect, so that model's logo menu is grayed out from the
+  start (a per-PID list in `librazer/src/unsupported.rs`); `razer-cli` still reads and writes it.
 - **`razer-cli auto info` and `auto json` report what they can.** Both stopped at the first read
   the laptop rejected and showed nothing after it. `info` now prints every feature and "not
   supported" for the ones the laptop lacks. `json` sets those fields to `null` and names them in a

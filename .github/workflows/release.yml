@@ -132,14 +132,12 @@ jobs:
             dist/razer-cli.exe
             dist/SHA256SUMS.txt
           body: |
-            Unsigned Windows x86_64 binaries. Verify against `SHA256SUMS.txt`.
+            Unsigned Windows x86-64 binaries, so SmartScreen warns on first run. Hashes are in `SHA256SUMS.txt`.
 
-            Windows SmartScreen will warn on first run: these binaries are not code-signed yet. Check the hash if that matters to you.
-
-            Every binary also carries a GitHub build-provenance attestation, which proves it was built by this repository's release workflow from this tag:
+            Each binary carries a build-provenance attestation proving this repo's release workflow built it from this tag:
 
             ```
             gh attestation verify razer-tray.exe --repo sqmagellan/razer-ctl --source-ref ${{ github.ref }} --signer-workflow sqmagellan/razer-ctl/.github/workflows/release.yml
             ```
 
-            **Tested on one model only.** See the Device support section of the README for what to expect on other Blades, and please file an "unsupported model" issue if you try one.
+            **Tested on one model.** See Device support in the README for other Blades, and please open an "unsupported model" issue if you try one.

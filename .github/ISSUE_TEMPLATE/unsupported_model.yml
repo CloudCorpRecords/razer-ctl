@@ -83,7 +83,7 @@ body:
     id: log
     attributes:
       label: Relevant lines from the log
-      description: "`%TEMP%\\razer-tray.log`. Startup lines and anything with WARN/ERROR."
+      description: "`%LOCALAPPDATA%\\razer-tray\\razer-tray.log`. Startup lines and anything with WARN/ERROR."
       render: text
     validations:
       required: false

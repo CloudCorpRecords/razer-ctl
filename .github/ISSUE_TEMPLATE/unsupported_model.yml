@@ -61,10 +61,15 @@ body:
     attributes:
       label: Fan range, if you measured it
       description: |
-        Only if you actually tested it. Set a manual RPM, then read `fan_actual_rpm` from
-        `razer-cli auto json`. The useful numbers are the lowest setpoint that changes anything and
-        the highest the EC will honor. **Leave blank if you're unsure**: a blank is better than a
-        guess, since this value goes straight into the device table.
+        Only if you actually tested it. Put the fan in Manual first: run
+        `razer-cli auto perf mode balanced`, then `razer-cli auto fan manual`, and check that
+        `razer-cli auto info` shows `Fan: Manual`. `auto fan rpm` alone does not change the mode,
+        and other perf modes can hold the fan above the set point. Then, at idle, set each RPM with
+        `razer-cli auto fan rpm <N>` and read `fan_actual_rpm` from `razer-cli auto json` every 15 s
+        until it stops changing, since the fans ramp slowly. The useful numbers are the lowest
+        setpoint that changes anything and the highest the EC will honor. **Leave blank if you're
+        unsure**: a blank is better than a guess, since this value goes straight into the device
+        table.
     validations:
       required: false
   - type: input

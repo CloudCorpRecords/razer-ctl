@@ -42,8 +42,11 @@ impl Device {
     const RAZER_VID: u16 = 0x1532;
 
     /// Record the optional settings this laptop turns out not to have, instead of failing
-    /// on them. For a model whose features nobody has checked: the generic profile and
-    /// `razer-cli manual`. See [`crate::unsupported`].
+    /// on them. For a model whose features nobody has checked: `detect` turns it on for the
+    /// generic profile. Only `DeviceState` reads and writes and
+    /// [`crate::state::unsupported_on`] consult the record, so the tray uses it and
+    /// `razer-cli` (`manual` included) doesn't need it: each command there reports its own
+    /// "not supported". See [`crate::unsupported`].
     pub fn learning_unsupported(mut self) -> Self {
         let known = crate::unsupported::known_lacking(self.info.pid);
         for feature in known.iter() {
